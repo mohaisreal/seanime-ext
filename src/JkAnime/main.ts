@@ -71,7 +71,21 @@ class Provider {
 
         const html = await res.text()
 
-        // Extract the numeric series ID used by the AJAX pagination endpoint.
+        const episodes: EpisodeDetails[] = []
+        const seen = new Set<number>()
+
+        const addEp = (number: number, epId?: string, title?: string) => {
+            if (!number || seen.has(number)) return
+            seen.add(number)
+            episodes.push({
+                id: epId ?? `${id}/${number}`,
+                number,
+                url: `${this.baseUrl}/${id}/${number}/`,
+                title: title ?? `Episodio ${number}`,
+            })
+        }
+
+        // --- AJAX pagination ---
         const seriesIdMatch = html.match(/ajax\/pagination_episodes\/(\d+)\//)
         if (seriesIdMatch) {
             const seriesId = seriesIdMatch[1]
@@ -94,70 +108,37 @@ class Provider {
             )
 
             const pages = await Promise.all(pageRequests)
-
-            const episodes: EpisodeDetails[] = []
-            const seen = new Set<number>()
-
             for (const page of pages) {
                 if (!Array.isArray(page)) continue
                 for (const ep of page) {
                     const number = parseInt(ep.number ?? ep.num ?? "0")
-                    if (!number || seen.has(number)) continue
-                    seen.add(number)
-                    episodes.push({
-                        id: `${id}/${number}`,
-                        number,
-                        url: `${this.baseUrl}/${id}/${number}/`,
-                        title: ep.title ?? `Episodio ${number}`,
-                    })
+                    addEp(number, `${id}/${number}`, ep.title)
                 }
             }
-
-            if (episodes.length > 0) {
-                return episodes.sort((a, b) => a.number - b.number)
-            }
         }
 
-        // Fallback: scrape episode links directly from the static HTML.
-        const episodes: EpisodeDetails[] = []
-        const seen = new Set<number>()
-
+        // --- HTML href scraping (always runs, merges with AJAX results) ---
         const escapedId = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-        const epPattern = new RegExp(
-            `href="(?:${this.baseUrl})?\\/(${escapedId}\\/(\\d+))\\/?"`,"g"
-        )
-
+        const epPattern = new RegExp(`href="(?:${this.baseUrl})?\\/(${escapedId}\\/(\\d+))\\/?"`,"g")
         let match: RegExpExecArray | null
         while ((match = epPattern.exec(html)) !== null) {
-            const epId = match[1]
-            const number = parseInt(match[2])
-            if (seen.has(number)) continue
-            seen.add(number)
-            episodes.push({
-                id: epId,
-                number,
-                url: `${this.baseUrl}/${epId}/`,
-                title: `Episodio ${number}`,
-            })
+            addEp(parseInt(match[2]), match[1])
         }
 
+        // --- Total-based synthetic fill (only if nothing found yet) ---
         if (episodes.length === 0) {
             const totalMatch =
                 html.match(/Episodios:<\/span>[^<]*?(\d+)/) ??
                 html.match(/data-episodes="(\d+)"/) ??
                 html.match(/num-episodios[^>]*>\s*(\d+)/) ??
                 html.match(/(\d+)\s*ep[ií]sodios?/i)
-
             const total = totalMatch ? parseInt(totalMatch[1]) : 0
-            for (let i = 1; i <= total; i++) {
-                episodes.push({
-                    id: `${id}/${i}`,
-                    number: i,
-                    url: `${this.baseUrl}/${id}/${i}/`,
-                    title: `Episodio ${i}`,
-                })
-            }
+            for (let i = 1; i <= total; i++) addEp(i)
         }
+
+        // Gap fill: if we found ep N but not ep 1..N-1, add them synthetically.
+        const maxEp = episodes.reduce((m, e) => Math.max(m, e.number), 0)
+        for (let i = 1; i < maxEp; i++) addEp(i)
 
         return episodes.sort((a, b) => a.number - b.number)
     }
@@ -244,7 +225,6 @@ class Provider {
         if (!res.ok) return { server, headers: {}, videoSources: [] }
 
         const html = await res.text()
-
         const playerMap = this._extractPlayerUrls(html)
 
         if (Object.keys(playerMap).length === 0) {
@@ -253,7 +233,6 @@ class Provider {
 
         // Prefer the requested server; fall back to JK, then to the first available.
         const playerUrl = playerMap[server] ?? playerMap["JK"] ?? Object.values(playerMap)[0]
-
         const source = await this._resolveStream(playerUrl)
 
         return {
