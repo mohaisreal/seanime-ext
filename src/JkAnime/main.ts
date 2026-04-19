@@ -76,7 +76,21 @@ class Provider {
         const html = await res.text()
         console.log(`[JK:findEpisodes] page html length: ${html.length}`)
 
-        // Extract the numeric series ID used by the AJAX pagination endpoint.
+        const episodes: EpisodeDetails[] = []
+        const seen = new Set<number>()
+
+        const addEp = (number: number, epId?: string, title?: string) => {
+            if (!number || seen.has(number)) return
+            seen.add(number)
+            episodes.push({
+                id: epId ?? `${id}/${number}`,
+                number,
+                url: `${this.baseUrl}/${id}/${number}/`,
+                title: title ?? `Episodio ${number}`,
+            })
+        }
+
+        // --- AJAX pagination ---
         const seriesIdMatch = html.match(/ajax\/pagination_episodes\/(\d+)\//)
         console.log(`[JK:findEpisodes] seriesIdMatch: ${seriesIdMatch ? seriesIdMatch[1] : "NOT FOUND"}`)
 
@@ -99,10 +113,10 @@ class Provider {
                     credentials: "include",
                     headers: { "X-Requested-With": "XMLHttpRequest", "Referer": url },
                 }).then(r => {
-                    console.log(`[JK:findEpisodes] ajax page ${i+1} status: ${r.status}`)
+                    console.log(`[JK:findEpisodes] ajax page ${i + 1} status: ${r.status}`)
                     return r.ok ? r.json() : []
                 }).catch(e => {
-                    console.log(`[JK:findEpisodes] ajax page ${i+1} error: ${e}`)
+                    console.log(`[JK:findEpisodes] ajax page error: ${e}`)
                     return []
                 })
             )
@@ -110,76 +124,42 @@ class Provider {
             const pages = await Promise.all(pageRequests)
             console.log(`[JK:findEpisodes] ajax pages raw: ${JSON.stringify(pages).slice(0, 500)}`)
 
-            const episodes: EpisodeDetails[] = []
-            const seen = new Set<number>()
-
             for (const page of pages) {
-                if (!Array.isArray(page)) {
-                    console.log(`[JK:findEpisodes] page is not array: ${typeof page}`)
-                    continue
-                }
+                if (!Array.isArray(page)) continue
                 for (const ep of page) {
                     const number = parseInt(ep.number ?? ep.num ?? "0")
-                    if (!number || seen.has(number)) continue
-                    seen.add(number)
-                    episodes.push({
-                        id: `${id}/${number}`,
-                        number,
-                        url: `${this.baseUrl}/${id}/${number}/`,
-                        title: ep.title ?? `Episodio ${number}`,
-                    })
+                    addEp(number, `${id}/${number}`, ep.title)
                 }
             }
 
             console.log(`[JK:findEpisodes] episodes from ajax: ${episodes.length}`)
-            if (episodes.length > 0) {
-                return episodes.sort((a, b) => a.number - b.number)
-            }
         }
 
-        // Fallback: scrape episode links directly from the static HTML.
-        console.log(`[JK:findEpisodes] falling back to HTML scraping`)
-        const episodes: EpisodeDetails[] = []
-        const seen = new Set<number>()
-
+        // --- HTML href scraping (always runs, merges with AJAX results) ---
         const escapedId = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-        const epPattern = new RegExp(
-            `href="(?:${this.baseUrl})?\\/(${escapedId}\\/(\\d+))\\/?"`,"g"
-        )
-
+        const epPattern = new RegExp(`href="(?:${this.baseUrl})?\\/(${escapedId}\\/(\\d+))\\/?"`,"g")
         let match: RegExpExecArray | null
         while ((match = epPattern.exec(html)) !== null) {
-            const epId = match[1]
-            const number = parseInt(match[2])
-            if (seen.has(number)) continue
-            seen.add(number)
-            episodes.push({
-                id: epId,
-                number,
-                url: `${this.baseUrl}/${epId}/`,
-                title: `Episodio ${number}`,
-            })
+            addEp(parseInt(match[2]), match[1])
         }
 
+        // --- Total-based synthetic fill (only if nothing found yet) ---
         if (episodes.length === 0) {
             const totalMatch =
                 html.match(/Episodios:<\/span>[^<]*?(\d+)/) ??
                 html.match(/data-episodes="(\d+)"/) ??
                 html.match(/num-episodios[^>]*>\s*(\d+)/) ??
                 html.match(/(\d+)\s*ep[ií]sodios?/i)
-
             const total = totalMatch ? parseInt(totalMatch[1]) : 0
-            for (let i = 1; i <= total; i++) {
-                episodes.push({
-                    id: `${id}/${i}`,
-                    number: i,
-                    url: `${this.baseUrl}/${id}/${i}/`,
-                    title: `Episodio ${i}`,
-                })
-            }
+            for (let i = 1; i <= total; i++) addEp(i)
         }
 
-        console.log(`[JK:findEpisodes] episodes from HTML fallback: ${episodes.length}`)
+        // --- Gap fill: episodes are sequential from 1, so fill any holes ---
+        // If we found ep 2 but not ep 1, ep 1 must exist — add it synthetically.
+        const maxEp = episodes.reduce((m, e) => Math.max(m, e.number), 0)
+        for (let i = 1; i < maxEp; i++) addEp(i)
+
+        console.log(`[JK:findEpisodes] final count: ${episodes.length}, max: ${maxEp}`)
         return episodes.sort((a, b) => a.number - b.number)
     }
 
