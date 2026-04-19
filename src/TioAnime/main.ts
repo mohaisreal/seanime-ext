@@ -156,16 +156,25 @@ class Provider {
 
         // Try each candidate until one resolves a valid stream.
         let source: VideoSource | null = null
+        let winningPlayerUrl: string | null = null
         for (const playerUrl of candidates) {
             source = await this._resolveStream(playerUrl)
-            if (source) break
+            if (source) {
+                winningPlayerUrl = playerUrl
+                break
+            }
         }
+
+        // Use the winning embed's origin as Referer so the CDN accepts manifest requests.
+        const streamOrigin = winningPlayerUrl
+            ? new URL(winningPlayerUrl).origin
+            : this.baseUrl
 
         return {
             server,
             headers: {
-                "Referer": this.baseUrl + "/",
-                "Origin": this.baseUrl,
+                "Referer": streamOrigin + "/",
+                "Origin": streamOrigin,
             },
             videoSources: source ? [source] : [],
         }
