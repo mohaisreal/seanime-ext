@@ -4,6 +4,11 @@ class Provider {
 
     baseUrl = "https://tioanime.com"
 
+    // Keyed by episode URL — avoids re-fetching the episode page for each server call.
+    private _playerMapCache = new Map<string, Record<string, string>>()
+    // Keyed by embed URL — avoids re-fetching the same embed across server calls.
+    private _streamCache = new Map<string, VideoSource | null>()
+
     getSettings(): Settings {
         return {
             // Servers sourced from TioAnime's `var videos` array.
@@ -130,12 +135,15 @@ class Provider {
      * the direct stream URL.
      */
     async findEpisodeServer(episode: EpisodeDetails, server: string): Promise<EpisodeServer> {
-        const res = await fetch(episode.url, { credentials: "include" })
-        if (!res.ok) return { server, headers: {}, videoSources: [] }
+        let playerMap = this._playerMapCache.get(episode.url)
 
-        const html = await res.text()
-
-        const playerMap = this._extractPlayerUrls(html)
+        if (!playerMap) {
+            const res = await fetch(episode.url, { credentials: "include" })
+            if (!res.ok) return { server, headers: {}, videoSources: [] }
+            const html = await res.text()
+            playerMap = this._extractPlayerUrls(html)
+            this._playerMapCache.set(episode.url, playerMap)
+        }
 
         if (Object.keys(playerMap).length === 0) {
             return { server, headers: {}, videoSources: [] }
@@ -158,7 +166,12 @@ class Provider {
         let source: VideoSource | null = null
         let winningPlayerUrl: string | null = null
         for (const playerUrl of candidates) {
-            source = await this._resolveStream(playerUrl)
+            if (this._streamCache.has(playerUrl)) {
+                source = this._streamCache.get(playerUrl)!
+            } else {
+                source = await this._resolveStream(playerUrl)
+                this._streamCache.set(playerUrl, source)
+            }
             if (source) {
                 winningPlayerUrl = playerUrl
                 break
