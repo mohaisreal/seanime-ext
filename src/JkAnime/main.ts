@@ -65,16 +65,11 @@ class Provider {
      */
     async findEpisodes(id: string): Promise<EpisodeDetails[]> {
         const url = `${this.baseUrl}/${id}/`
-        console.log(`[JK:findEpisodes] fetching: ${url}`)
 
         const res = await fetch(url, { credentials: "include" })
-        if (!res.ok) {
-            console.log(`[JK:findEpisodes] page fetch failed: ${res.status}`)
-            return []
-        }
+        if (!res.ok) return []
 
         const html = await res.text()
-        console.log(`[JK:findEpisodes] page html length: ${html.length}`)
 
         const episodes: EpisodeDetails[] = []
         const seen = new Set<number>()
@@ -92,8 +87,6 @@ class Provider {
 
         // --- AJAX pagination ---
         const seriesIdMatch = html.match(/ajax\/pagination_episodes\/(\d+)\//)
-        console.log(`[JK:findEpisodes] seriesIdMatch: ${seriesIdMatch ? seriesIdMatch[1] : "NOT FOUND"}`)
-
         if (seriesIdMatch) {
             const seriesId = seriesIdMatch[1]
 
@@ -106,24 +99,15 @@ class Provider {
 
             const total = totalMatch ? parseInt(totalMatch[1]) : 0
             const pageCount = total > 0 ? Math.ceil(total / 10) : 1
-            console.log(`[JK:findEpisodes] total: ${total}, pageCount: ${pageCount}`)
 
             const pageRequests = Array.from({ length: pageCount }, (_, i) =>
                 fetch(`${this.baseUrl}/ajax/pagination_episodes/${seriesId}/${i + 1}/`, {
                     credentials: "include",
                     headers: { "X-Requested-With": "XMLHttpRequest", "Referer": url },
-                }).then(r => {
-                    console.log(`[JK:findEpisodes] ajax page ${i + 1} status: ${r.status}`)
-                    return r.ok ? r.json() : []
-                }).catch(e => {
-                    console.log(`[JK:findEpisodes] ajax page error: ${e}`)
-                    return []
-                })
+                }).then(r => r.ok ? r.json() : []).catch(() => [])
             )
 
             const pages = await Promise.all(pageRequests)
-            console.log(`[JK:findEpisodes] ajax pages raw: ${JSON.stringify(pages).slice(0, 500)}`)
-
             for (const page of pages) {
                 if (!Array.isArray(page)) continue
                 for (const ep of page) {
@@ -131,8 +115,6 @@ class Provider {
                     addEp(number, `${id}/${number}`, ep.title)
                 }
             }
-
-            console.log(`[JK:findEpisodes] episodes from ajax: ${episodes.length}`)
         }
 
         // --- HTML href scraping (always runs, merges with AJAX results) ---
@@ -154,12 +136,10 @@ class Provider {
             for (let i = 1; i <= total; i++) addEp(i)
         }
 
-        // --- Gap fill: episodes are sequential from 1, so fill any holes ---
-        // If we found ep 2 but not ep 1, ep 1 must exist — add it synthetically.
+        // Gap fill: if we found ep N but not ep 1..N-1, add them synthetically.
         const maxEp = episodes.reduce((m, e) => Math.max(m, e.number), 0)
         for (let i = 1; i < maxEp; i++) addEp(i)
 
-        console.log(`[JK:findEpisodes] final count: ${episodes.length}, max: ${maxEp}`)
         return episodes.sort((a, b) => a.number - b.number)
     }
 
@@ -241,31 +221,19 @@ class Provider {
      * requested server is not found on the page.
      */
     async findEpisodeServer(episode: EpisodeDetails, server: string): Promise<EpisodeServer> {
-        console.log(`[JK:findEpisodeServer] episode.url: ${episode.url}, server: ${server}`)
-
         const res = await fetch(episode.url, { credentials: "include" })
-        if (!res.ok) {
-            console.log(`[JK:findEpisodeServer] episode page fetch failed: ${res.status}`)
-            return { server, headers: {}, videoSources: [] }
-        }
+        if (!res.ok) return { server, headers: {}, videoSources: [] }
 
         const html = await res.text()
-        console.log(`[JK:findEpisodeServer] episode html length: ${html.length}`)
-
         const playerMap = this._extractPlayerUrls(html)
-        console.log(`[JK:findEpisodeServer] playerMap keys: ${JSON.stringify(Object.keys(playerMap))}`)
 
         if (Object.keys(playerMap).length === 0) {
-            console.log(`[JK:findEpisodeServer] no players found in html`)
             return { server, headers: {}, videoSources: [] }
         }
 
         // Prefer the requested server; fall back to JK, then to the first available.
         const playerUrl = playerMap[server] ?? playerMap["JK"] ?? Object.values(playerMap)[0]
-        console.log(`[JK:findEpisodeServer] selected playerUrl: ${playerUrl}`)
-
         const source = await this._resolveStream(playerUrl)
-        console.log(`[JK:findEpisodeServer] resolved source: ${source ? source.url : "null"}`)
 
         return {
             server,
