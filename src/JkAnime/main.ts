@@ -54,14 +54,14 @@ class Provider {
     }
 
     /**
-     * Fetches the anime detail page and returns all available episodes.
+     * Fetches all episodes via JKAnime's AJAX pagination endpoint.
      *
-     * Strategy:
-     *  1. Try to extract episode links directly from the page HTML using a
-     *     pattern like `/{id}/{number}/`.
-     *  2. If no links are found (some pages render episodes via JS), fall back
-     *     to reading the total episode count from the page metadata and
-     *     building the list synthetically.
+     * JKAnime renders episode lists client-side, so the static HTML only contains
+     * the latest episode. All episodes are available through:
+     *   /ajax/pagination_episodes/{idserie}/{page}/  (10 episodes per page, JSON)
+     *
+     * The numeric `idserie` is embedded in the series page HTML.
+     * Falls back to static HTML scraping if the AJAX path fails or returns empty.
      */
     async findEpisodes(id: string): Promise<EpisodeDetails[]> {
         const url = `${this.baseUrl}/${id}/`
@@ -71,10 +71,57 @@ class Provider {
 
         const html = await res.text()
 
+        // Extract the numeric series ID used by the AJAX pagination endpoint.
+        const seriesIdMatch = html.match(/ajax\/pagination_episodes\/(\d+)\//)
+        if (seriesIdMatch) {
+            const seriesId = seriesIdMatch[1]
+
+            const totalMatch =
+                html.match(/num_episodios\s*=\s*(\d+)/) ??
+                html.match(/Episodios:<\/span>[^<]*?(\d+)/) ??
+                html.match(/data-episodes="(\d+)"/) ??
+                html.match(/num-episodios[^>]*>\s*(\d+)/) ??
+                html.match(/(\d+)\s*ep[ií]sodios?/i)
+
+            const total = totalMatch ? parseInt(totalMatch[1]) : 0
+            const pageCount = total > 0 ? Math.ceil(total / 10) : 1
+
+            const pageRequests = Array.from({ length: pageCount }, (_, i) =>
+                fetch(`${this.baseUrl}/ajax/pagination_episodes/${seriesId}/${i + 1}/`, {
+                    credentials: "include",
+                    headers: { "X-Requested-With": "XMLHttpRequest", "Referer": url },
+                }).then(r => r.ok ? r.json() : []).catch(() => [])
+            )
+
+            const pages = await Promise.all(pageRequests)
+
+            const episodes: EpisodeDetails[] = []
+            const seen = new Set<number>()
+
+            for (const page of pages) {
+                if (!Array.isArray(page)) continue
+                for (const ep of page) {
+                    const number = parseInt(ep.number ?? ep.num ?? "0")
+                    if (!number || seen.has(number)) continue
+                    seen.add(number)
+                    episodes.push({
+                        id: `${id}/${number}`,
+                        number,
+                        url: `${this.baseUrl}/${id}/${number}/`,
+                        title: ep.title ?? `Episodio ${number}`,
+                    })
+                }
+            }
+
+            if (episodes.length > 0) {
+                return episodes.sort((a, b) => a.number - b.number)
+            }
+        }
+
+        // Fallback: scrape episode links directly from the static HTML.
         const episodes: EpisodeDetails[] = []
         const seen = new Set<number>()
 
-        // Escape the ID for safe use inside a RegExp (handles hyphens, dots, etc.).
         const escapedId = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
         const epPattern = new RegExp(
             `href="(?:${this.baseUrl})?\\/(${escapedId}\\/(\\d+))\\/?"`,"g"
@@ -84,7 +131,6 @@ class Provider {
         while ((match = epPattern.exec(html)) !== null) {
             const epId = match[1]
             const number = parseInt(match[2])
-            // Deduplicate: the same episode link can appear multiple times in the DOM.
             if (seen.has(number)) continue
             seen.add(number)
             episodes.push({
@@ -95,8 +141,6 @@ class Provider {
             })
         }
 
-        // Fallback: if the episode list is rendered client-side, derive the count
-        // from metadata attributes or text patterns and generate each entry.
         if (episodes.length === 0) {
             const totalMatch =
                 html.match(/Episodios:<\/span>[^<]*?(\d+)/) ??

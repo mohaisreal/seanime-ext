@@ -1,13 +1,13 @@
 {
   "id": "jkanime",
-  "name": "JkAnime",
-  "version": "1.0.0",
-  "manifestURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/JkAnime/manifest.json",
+  "name": "JkAnime - Dev",
+  "version": "1.0.1",
+  "manifestURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext-dev/main/src/JkAnime/manifest.json",
   "language": "typescript",
   "type": "onlinestream-provider",
   "description": "JkAnime is an online streaming provider for spanish subs.",
   "author": "mohaisreal",
-  "icon": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/JkAnime/image.png",
+  "icon": "https://raw.githubusercontent.com/mohaisreal/seanime-ext-dev/main/src/JkAnime/image.png",
   "lang": "es",
-  "payloadURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/JkAnime/main.ts"
+  "payloadURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext-dev/main/src/JkAnime/main.ts"
 }
