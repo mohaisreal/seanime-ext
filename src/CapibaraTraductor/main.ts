@@ -171,9 +171,17 @@ class Provider {
             const html = await res.text()
             console.log("[capibara] page=" + pageNum + " html length=" + html.length)
 
-            // Exclude organization logos and manga covers — chapter images live under /chapters/ or /pages/
-            const imgMatch = html.match(/src="(https:\/\/r2\.capibaratraductor\.com\/(?:chapters|pages|tenants)[^"]+)"/i)
-                ?? html.match(/data-src="(https:\/\/r2\.capibaratraductor\.com\/(?:chapters|pages|tenants)[^"]+)"/i)
+            // Log ALL r2 URLs found so we can identify the correct path pattern
+            const allR2: string[] = []
+            const r2Pattern = /(?:src|data-src|href)="(https:\/\/r2\.capibaratraductor\.com\/[^"]+)"/gi
+            let r2Match: RegExpExecArray | null
+            while ((r2Match = r2Pattern.exec(html)) !== null) {
+                allR2.push(r2Match[1])
+            }
+            console.log("[capibara] page=" + pageNum + " r2 urls=" + JSON.stringify(allR2))
+
+            // Match any r2 URL that isn't an org logo, manga cover, or banner
+            const imgMatch = html.match(/(?:src|data-src)="(https:\/\/r2\.capibaratraductor\.com\/(?!organization\/|mangas\/)[^"]+)"/i)
             console.log("[capibara] page=" + pageNum + " img=" + (imgMatch ? imgMatch[1] : "none"))
             if (!imgMatch) break
 
