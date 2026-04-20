@@ -110,10 +110,13 @@ class Provider {
         const [orgSlug, mangaSlug, chapterNum] = id.split("|")
         console.log("[capibara] findChapterPages id=" + id)
 
-        // Try the REST API with minimal headers (same as search, which bypasses Cloudflare)
+        // Referer is required — the server extracts the organization slug from it
         const apiUrl = `${this.api}/manga-custom/${mangaSlug}/chapter/${chapterNum}/pages`
         const res = await fetch(apiUrl, {
-            headers: { "Accept": "application/json" },
+            headers: {
+                "Accept": "application/json",
+                "Referer": `${this.baseUrl}/${orgSlug}/manga/${mangaSlug}/chapters/${chapterNum}`,
+            },
         })
         console.log("[capibara] pages API status=" + res.status)
 
@@ -219,6 +222,7 @@ interface CapibaraItem {
     imageUrl: string | null
     releasedAt: string | null
     status: string
+    views: number
     manga: {
         id: number
         title: string
