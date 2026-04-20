@@ -110,13 +110,12 @@ class Provider {
         const [orgSlug, mangaSlug, chapterNum] = id.split("|")
         console.log("[capibara] findChapterPages id=" + id)
 
-        // Referer is required — the server extracts the organization slug from it
-        const apiUrl = `${this.api}/manga-custom/${mangaSlug}/chapter/${chapterNum}/pages`
+        // Server identifies the organization via the Host header (multi-tenant by subdomain).
+        // Calling from {orgSlug}.capibaratraductor.com sets Host automatically.
+        const tenantBase = `https://${orgSlug}.capibaratraductor.com`
+        const apiUrl = `${tenantBase}/api/manga-custom/${mangaSlug}/chapter/${chapterNum}/pages`
         const res = await fetch(apiUrl, {
-            headers: {
-                "Accept": "application/json",
-                "Referer": `${this.baseUrl}/${orgSlug}/manga/${mangaSlug}/chapters/${chapterNum}`,
-            },
+            headers: { "Accept": "application/json" },
         })
         console.log("[capibara] pages API status=" + res.status)
 
