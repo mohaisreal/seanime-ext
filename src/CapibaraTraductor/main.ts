@@ -54,17 +54,23 @@ class Provider {
         // (orgSlug|mangaSlug|numericId) — extract the slug from whichever we receive
         const parts = id.split("|")
         const mangaSlug = parts.length >= 2 ? parts[1] : parts[0]
+        console.log("[capibara] findChapters id=" + id + " mangaSlug=" + mangaSlug)
 
-        const url = `${this.api}/manga-custom?page=1&limit=50&order=latest&nsfw=false&search=${encodeURIComponent(mangaSlug)}`
+        // The API matches against titles (spaces), not slugs (hyphens) — convert before searching
+        const searchQuery = mangaSlug.replace(/-/g, " ")
+        const url = `${this.api}/manga-custom?page=1&limit=50&order=latest&nsfw=false&search=${encodeURIComponent(searchQuery)}`
         const res = await fetch(url, { headers: { "Accept": "application/json" } })
+        console.log("[capibara] search status=" + res.status + " query=" + searchQuery)
         if (!res.ok) return []
 
         const json = await res.json() as CapibaraSearchResponse
+        console.log("[capibara] items=" + (json.data?.items?.length ?? 0))
         if (!json.status || !json.data?.items?.length) return []
 
         // Prefer exact slug match; fall back to whatever the API returned for this query
         const matching = json.data.items.filter(i => i.manga.slug === mangaSlug)
         const items = matching.length > 0 ? matching : json.data.items
+        console.log("[capibara] matching=" + matching.length + " using=" + items.length + " items")
 
         const all: ChapterDetails[] = []
 
@@ -72,6 +78,7 @@ class Provider {
             const orgSlug = item.organization.slug
             const orgName = item.organization.name
             const maxChapter = item.chapters.reduce((m, c) => Math.max(m, c.number), 0)
+            console.log("[capibara] org=" + orgSlug + " maxChapter=" + maxChapter)
             if (maxChapter === 0) continue
 
             for (let i = 1; i <= maxChapter; i++) {
@@ -93,6 +100,7 @@ class Provider {
         })
 
         for (let i = 0; i < all.length; i++) all[i].index = i
+        console.log("[capibara] returning " + all.length + " chapters total")
 
         return all
     }
