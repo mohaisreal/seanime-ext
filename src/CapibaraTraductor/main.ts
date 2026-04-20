@@ -26,7 +26,8 @@ class Provider {
         for (const item of json.data.items) {
             const year = item.releasedAt ? new Date(item.releasedAt).getFullYear() : 0
             results.push({
-                id: `${item.organization.slug}|${item.manga.slug}`,
+                // id encodes orgSlug|mangaSlug|numericId so findChapters can use all three
+                id: `${item.organization.slug}|${item.manga.slug}|${item.id}`,
                 title: item.title,
                 image: item.imageUrl ?? "",
                 year: year || 0,
@@ -38,104 +39,24 @@ class Provider {
     }
 
     async findChapters(id: string): Promise<ChapterDetails[]> {
-        const [orgSlug, mangaSlug] = id.split("|")
-        const pageUrl = `${this.baseUrl}/${orgSlug}/manga/${mangaSlug}`
+        const [orgSlug, mangaSlug, numericId] = id.split("|")
 
-        const res = await fetch(pageUrl, {
-            headers: {
-                "Accept": "text/html,application/xhtml+xml",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            },
-        })
+        // Re-query the search API using the manga slug — no HTML fetch needed.
+        // The response includes the 2 latest chapters; the highest number is our ceiling.
+        const url = `${this.api}/manga-custom?page=1&limit=25&order=latest&nsfw=false&search=${encodeURIComponent(mangaSlug)}`
+        const res = await fetch(url, { headers: { "Accept": "application/json" } })
         if (!res.ok) return []
 
-        const html = await res.text()
+        const json = await res.json() as CapibaraSearchResponse
+        if (!json.status || !json.data?.items?.length) return []
 
-        // Try to parse chapter list from Astro island props
-        const chapters = this._parseChaptersFromAstroIslands(html, orgSlug, mangaSlug)
-        if (chapters.length > 0) return chapters
+        // Match by numeric ID so we pick the right entry when multiple scans share the same slug
+        const item = json.data.items.find(i => String(i.id) === numericId)
+            ?? json.data.items.find(i => i.manga.slug === mangaSlug)
+        if (!item) return []
 
-        // Fallback: build sequential list from the last chapter link in the HTML
-        return this._fallbackSequentialChapters(html, orgSlug, mangaSlug)
-    }
-
-    private _parseChaptersFromAstroIslands(html: string, orgSlug: string, mangaSlug: string): ChapterDetails[] {
-        // Astro embeds island props as JSON in the props attribute.
-        // We try single-quoted first, then double-quoted.
-        const patterns = [
-            /<astro-island[^>]+\sprops='([^']*)'[^>]*>/g,
-            /<astro-island[^>]+\sprops="([^"]*)"/g,
-        ]
-
-        for (const pattern of patterns) {
-            let match: RegExpExecArray | null
-            while ((match = pattern.exec(html)) !== null) {
-                try {
-                    const raw = this._decodeHtmlEntities(match[1])
-                    const props = JSON.parse(raw)
-                    const chapters = this._extractChaptersFromProps(props, orgSlug, mangaSlug)
-                    if (chapters.length > 0) return chapters
-                } catch {}
-            }
-        }
-
-        return []
-    }
-
-    private _extractChaptersFromProps(props: any, orgSlug: string, mangaSlug: string): ChapterDetails[] {
-        // Astro serializes props as { key: [typeIndex, value] }.
-        // We unwrap recursively to get plain values.
-        const unwrap = (val: any): any => {
-            if (Array.isArray(val) && val.length === 2 && typeof val[0] === "number" && val[0] < 10) {
-                return unwrap(val[1])
-            }
-            if (Array.isArray(val)) return val.map(unwrap)
-            if (val !== null && typeof val === "object") {
-                const out: any = {}
-                for (const k of Object.keys(val)) out[k] = unwrap(val[k])
-                return out
-            }
-            return val
-        }
-
-        const unwrapped = unwrap(props)
-
-        // Search any top-level key for an array of chapter objects
-        for (const key of Object.keys(unwrapped ?? {})) {
-            const candidate = unwrapped[key]
-            if (!Array.isArray(candidate) || candidate.length === 0) continue
-            if (typeof candidate[0]?.number !== "number") continue
-
-            return this._buildChapterList(candidate as CapibaraChapter[], orgSlug, mangaSlug)
-        }
-
-        return []
-    }
-
-    private _buildChapterList(raw: CapibaraChapter[], orgSlug: string, mangaSlug: string): ChapterDetails[] {
-        const sorted = [...raw].sort((a, b) => a.number - b.number)
-        return sorted.map((ch, index) => ({
-            id: `${orgSlug}|${mangaSlug}|${ch.number}`,
-            url: `${this.baseUrl}/${orgSlug}/manga/${mangaSlug}/chapters/${ch.number}`,
-            title: ch.title ?? `Capítulo ${ch.number}`,
-            chapter: String(ch.number),
-            index,
-            scanlator: orgSlug,
-            updatedAt: ch.releasedAt ?? undefined,
-        }))
-    }
-
-    private _fallbackSequentialChapters(html: string, orgSlug: string, mangaSlug: string): ChapterDetails[] {
-        // Extract the highest chapter number from all /chapters/{n} links
-        const linkPattern = /\/chapters\/(\d+)/g
-        let match: RegExpExecArray | null
-        let maxChapter = 0
-
-        while ((match = linkPattern.exec(html)) !== null) {
-            const n = parseInt(match[1])
-            if (n > maxChapter) maxChapter = n
-        }
-
+        // chapters[] holds the 2 most-recent entries; the first is the latest
+        const maxChapter = item.chapters.reduce((m, c) => Math.max(m, c.number), 0)
         if (maxChapter === 0) return []
 
         const chapters: ChapterDetails[] = []
@@ -221,17 +142,6 @@ class Provider {
         return pages
     }
 
-    private _decodeHtmlEntities(str: string): string {
-        return str
-            .replace(/&quot;/g, '"')
-            .replace(/&#34;/g, '"')
-            .replace(/&amp;/g, "&")
-            .replace(/&#38;/g, "&")
-            .replace(/&#39;/g, "'")
-            .replace(/&apos;/g, "'")
-            .replace(/&lt;/g, "<")
-            .replace(/&gt;/g, ">")
-    }
 }
 
 // ── API types ─────────────────────────────────────────────────────────────────
