@@ -56,11 +56,12 @@ class Provider {
         const mangaSlug = parts.length >= 2 ? parts[1] : parts[0]
         console.log("[capibara] findChapters id=" + id + " mangaSlug=" + mangaSlug)
 
-        // The API matches against titles (spaces), not slugs (hyphens) — convert before searching
-        const searchQuery = mangaSlug.replace(/-/g, " ")
-        const url = `${this.api}/manga-custom?page=1&limit=50&order=latest&nsfw=false&search=${encodeURIComponent(searchQuery)}`
+        // The API only matches short keywords reliably — use the first word of the slug,
+        // then filter results by exact manga.slug to get the right entry
+        const firstWord = mangaSlug.split("-")[0]
+        const url = `${this.api}/manga-custom?page=1&limit=50&order=latest&nsfw=false&search=${encodeURIComponent(firstWord)}`
         const res = await fetch(url, { headers: { "Accept": "application/json" } })
-        console.log("[capibara] search status=" + res.status + " query=" + searchQuery)
+        console.log("[capibara] search status=" + res.status + " query=" + firstWord)
         if (!res.ok) return []
 
         const json = await res.json() as CapibaraSearchResponse
