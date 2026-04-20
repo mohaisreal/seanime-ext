@@ -8,7 +8,7 @@ class Provider {
     getSettings(): Settings {
         return {
             supportsMultiLanguage: false,
-            supportsMultiScanlator: false,
+            supportsMultiScanlator: true,
         }
     }
 
@@ -22,16 +22,27 @@ class Provider {
         const json = await res.json() as CapibaraSearchResponse
         if (!json.status || !json.data?.items?.length) return []
 
-        const results: SearchResult[] = []
+        // Deduplicate by manga.slug — keep the entry with the most views per unique manga.
+        // This way the user sees one result per manga, and findChapters merges all scans.
+        const best: Record<string, CapibaraItem> = {}
         for (const item of json.data.items) {
+            const existing = best[item.manga.slug]
+            if (!existing || item.views > existing.views) {
+                best[item.manga.slug] = item
+            }
+        }
+
+        const results: SearchResult[] = []
+        for (const slug of Object.keys(best)) {
+            const item = best[slug]
             const year = item.releasedAt ? new Date(item.releasedAt).getFullYear() : 0
+            const synonyms: string[] = item.manga.title !== item.title ? [item.manga.title] : []
             results.push({
-                // id encodes orgSlug|mangaSlug|numericId so findChapters can use all three
-                id: `${item.organization.slug}|${item.manga.slug}|${item.id}`,
+                id: item.manga.slug,
                 title: item.title,
                 image: item.imageUrl ?? "",
                 year: year || 0,
-                synonyms: item.manga.title !== item.title ? [item.manga.title] : [],
+                synonyms,
             })
         }
 
@@ -39,38 +50,51 @@ class Provider {
     }
 
     async findChapters(id: string): Promise<ChapterDetails[]> {
-        const [orgSlug, mangaSlug, numericId] = id.split("|")
+        // id can be either the current format (manga.slug) or the legacy format
+        // (orgSlug|mangaSlug|numericId) — extract the slug from whichever we receive
+        const parts = id.split("|")
+        const mangaSlug = parts.length >= 2 ? parts[1] : parts[0]
 
-        // Re-query the search API using the manga slug — no HTML fetch needed.
-        // The response includes the 2 latest chapters; the highest number is our ceiling.
-        const url = `${this.api}/manga-custom?page=1&limit=25&order=latest&nsfw=false&search=${encodeURIComponent(mangaSlug)}`
+        const url = `${this.api}/manga-custom?page=1&limit=50&order=latest&nsfw=false&search=${encodeURIComponent(mangaSlug)}`
         const res = await fetch(url, { headers: { "Accept": "application/json" } })
         if (!res.ok) return []
 
         const json = await res.json() as CapibaraSearchResponse
         if (!json.status || !json.data?.items?.length) return []
 
-        // Match by numeric ID so we pick the right entry when multiple scans share the same slug
-        const item = json.data.items.find(i => String(i.id) === numericId)
-            ?? json.data.items.find(i => i.manga.slug === mangaSlug)
-        if (!item) return []
+        // Prefer exact slug match; fall back to whatever the API returned for this query
+        const matching = json.data.items.filter(i => i.manga.slug === mangaSlug)
+        const items = matching.length > 0 ? matching : json.data.items
 
-        // chapters[] holds the 2 most-recent entries; the first is the latest
-        const maxChapter = item.chapters.reduce((m, c) => Math.max(m, c.number), 0)
-        if (maxChapter === 0) return []
+        const all: ChapterDetails[] = []
 
-        const chapters: ChapterDetails[] = []
-        for (let i = 1; i <= maxChapter; i++) {
-            chapters.push({
-                id: `${orgSlug}|${mangaSlug}|${i}`,
-                url: `${this.baseUrl}/${orgSlug}/manga/${mangaSlug}/chapters/${i}`,
-                title: `Capítulo ${i}`,
-                chapter: String(i),
-                index: i - 1,
-            })
+        for (const item of items) {
+            const orgSlug = item.organization.slug
+            const orgName = item.organization.name
+            const maxChapter = item.chapters.reduce((m, c) => Math.max(m, c.number), 0)
+            if (maxChapter === 0) continue
+
+            for (let i = 1; i <= maxChapter; i++) {
+                all.push({
+                    id: `${orgSlug}|${mangaSlug}|${i}`,
+                    url: `${this.baseUrl}/${orgSlug}/manga/${mangaSlug}/chapters/${i}`,
+                    title: `Capítulo ${i}`,
+                    chapter: String(i),
+                    index: 0,          // recalculated below after sort
+                    scanlator: orgName,
+                })
+            }
         }
 
-        return chapters
+        // Sort by chapter number ascending, then by scanlator name as tiebreaker
+        all.sort((a, b) => {
+            const diff = parseFloat(a.chapter) - parseFloat(b.chapter)
+            return diff !== 0 ? diff : (a.scanlator ?? "").localeCompare(b.scanlator ?? "")
+        })
+
+        for (let i = 0; i < all.length; i++) all[i].index = i
+
+        return all
     }
 
     async findChapterPages(id: string): Promise<ChapterPage[]> {
@@ -87,17 +111,20 @@ class Provider {
         })
 
         if (res.ok) {
-            const json = await res.json()
-            const raw: CapibaraPage[] = Array.isArray(json)
-                ? json
-                : Array.isArray(json?.data) ? json.data
-                : Array.isArray(json?.pages) ? json.pages
-                : []
+            const json = await res.json() as any
+            let raw: CapibaraPage[] = []
+            if (Array.isArray(json)) {
+                raw = json as CapibaraPage[]
+            } else if (Array.isArray(json.data)) {
+                raw = json.data as CapibaraPage[]
+            } else if (Array.isArray(json.pages)) {
+                raw = json.pages as CapibaraPage[]
+            }
 
             if (raw.length > 0) {
-                return raw.map((p, index) => ({
+                return raw.map((p: CapibaraPage, index: number) => ({
                     url: p.url ?? p.imageUrl ?? p.image ?? "",
-                    index: p.index ?? index,
+                    index: p.index !== undefined ? p.index : index,
                     headers: { "Referer": this.baseUrl },
                 }))
             }
