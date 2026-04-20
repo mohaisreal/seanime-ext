@@ -78,17 +78,16 @@ class Provider {
         for (const item of items) {
             const orgSlug = item.organization.slug
             const orgName = item.organization.name
-            const maxChapter = item.chapters.reduce((m, c) => Math.max(m, c.number), 0)
-            console.log("[capibara] org=" + orgSlug + " maxChapter=" + maxChapter)
-            if (maxChapter === 0) continue
+            if (!item.chapters.length) continue
+            console.log("[capibara] org=" + orgSlug + " chapters=" + item.chapters.length)
 
-            for (let i = 1; i <= maxChapter; i++) {
+            for (const ch of item.chapters) {
                 all.push({
-                    id: `${orgSlug}|${mangaSlug}|${i}`,
-                    url: `${this.baseUrl}/${orgSlug}/manga/${mangaSlug}/chapters/${i}`,
-                    title: `Capítulo ${i}`,
-                    chapter: String(i),
-                    index: 0,          // recalculated below after sort
+                    id: `${orgSlug}|${mangaSlug}|${ch.number}`,
+                    url: `${this.baseUrl}/${orgSlug}/manga/${mangaSlug}/chapters/${ch.number}`,
+                    title: `Capítulo ${ch.number}`,
+                    chapter: String(ch.number),
+                    index: 0,
                     scanlator: orgName,
                 })
             }
