@@ -110,20 +110,17 @@ class Provider {
         const [orgSlug, mangaSlug, chapterNum] = id.split("|")
         console.log("[capibara] findChapterPages id=" + id)
 
-        // Try the REST API first
+        // Try the REST API with minimal headers (same as search, which bypasses Cloudflare)
         const apiUrl = `${this.api}/manga-custom/${mangaSlug}/chapter/${chapterNum}/pages`
         const res = await fetch(apiUrl, {
-            headers: {
-                "Accept": "application/json",
-                "Referer": `${this.baseUrl}/${orgSlug}/manga/${mangaSlug}/chapters/${chapterNum}`,
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            },
+            headers: { "Accept": "application/json" },
         })
         console.log("[capibara] pages API status=" + res.status)
 
+        const text = await res.text()
+        console.log("[capibara] pages API body=" + text.slice(0, 500))
+
         if (res.ok) {
-            const text = await res.text()
-            console.log("[capibara] pages API body=" + text.slice(0, 300))
             let json: any
             try { json = JSON.parse(text) } catch { json = null }
 
