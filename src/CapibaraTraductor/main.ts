@@ -108,6 +108,7 @@ class Provider {
 
     async findChapterPages(id: string): Promise<ChapterPage[]> {
         const [orgSlug, mangaSlug, chapterNum] = id.split("|")
+        console.log("[capibara] findChapterPages id=" + id)
 
         // Try the REST API first
         const apiUrl = `${this.api}/manga-custom/${mangaSlug}/chapter/${chapterNum}/pages`
@@ -118,17 +119,27 @@ class Provider {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             },
         })
+        console.log("[capibara] pages API status=" + res.status)
 
         if (res.ok) {
-            const json = await res.json() as any
+            const text = await res.text()
+            console.log("[capibara] pages API body=" + text.slice(0, 300))
+            let json: any
+            try { json = JSON.parse(text) } catch { json = null }
+
             let raw: CapibaraPage[] = []
-            if (Array.isArray(json)) {
-                raw = json as CapibaraPage[]
-            } else if (Array.isArray(json.data)) {
-                raw = json.data as CapibaraPage[]
-            } else if (Array.isArray(json.pages)) {
-                raw = json.pages as CapibaraPage[]
+            if (json !== null) {
+                if (Array.isArray(json)) {
+                    raw = json as CapibaraPage[]
+                } else if (Array.isArray(json.data)) {
+                    raw = json.data as CapibaraPage[]
+                } else if (Array.isArray(json.pages)) {
+                    raw = json.pages as CapibaraPage[]
+                } else if (json.data && Array.isArray(json.data.pages)) {
+                    raw = json.data.pages as CapibaraPage[]
+                }
             }
+            console.log("[capibara] raw pages count=" + raw.length)
 
             if (raw.length > 0) {
                 return raw.map((p: CapibaraPage, index: number) => ({
@@ -139,7 +150,7 @@ class Provider {
             }
         }
 
-        // Fallback: scrape each page URL (?page=N) and extract the <img> from HTML
+        // Fallback: scrape each page URL (?page=N) and extract the chapter image from HTML
         return this._scrapePageByPage(orgSlug, mangaSlug, chapterNum)
     }
 
@@ -158,9 +169,12 @@ class Provider {
             if (!res.ok) break
 
             const html = await res.text()
+            console.log("[capibara] page=" + pageNum + " html length=" + html.length)
 
-            // Image is hosted on r2.capibaratraductor.com
-            const imgMatch = html.match(/src="(https:\/\/r2\.capibaratraductor\.com\/[^"]+\.(jpg|jpeg|png|webp)[^"]*)"/i)
+            // Exclude organization logos and manga covers — chapter images live under /chapters/ or /pages/
+            const imgMatch = html.match(/src="(https:\/\/r2\.capibaratraductor\.com\/(?:chapters|pages|tenants)[^"]+)"/i)
+                ?? html.match(/data-src="(https:\/\/r2\.capibaratraductor\.com\/(?:chapters|pages|tenants)[^"]+)"/i)
+            console.log("[capibara] page=" + pageNum + " img=" + (imgMatch ? imgMatch[1] : "none"))
             if (!imgMatch) break
 
             pages.push({
@@ -175,6 +189,7 @@ class Provider {
             if (!hasNextPage) break
         }
 
+        console.log("[capibara] scrape returned " + pages.length + " pages")
         return pages
     }
 
