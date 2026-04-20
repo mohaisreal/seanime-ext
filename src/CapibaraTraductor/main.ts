@@ -110,12 +110,12 @@ class Provider {
         const [orgSlug, mangaSlug, chapterNum] = id.split("|")
         console.log("[capibara] findChapterPages id=" + id)
 
-        // Server identifies the organization via the Host header (multi-tenant by subdomain).
-        // Calling from {orgSlug}.capibaratraductor.com sets Host automatically.
-        const tenantBase = `https://${orgSlug}.capibaratraductor.com`
-        const apiUrl = `${tenantBase}/api/manga-custom/${mangaSlug}/chapter/${chapterNum}/pages`
+        const apiUrl = `${this.api}/manga-custom/${mangaSlug}/chapter/${chapterNum}/pages`
         const res = await fetch(apiUrl, {
-            headers: { "Accept": "application/json" },
+            headers: {
+                "Accept": "application/json",
+                "x-organization": orgSlug,
+            },
         })
         console.log("[capibara] pages API status=" + res.status)
 
