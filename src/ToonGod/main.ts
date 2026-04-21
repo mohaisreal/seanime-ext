@@ -165,12 +165,14 @@ class Provider {
             }
 
             const origin = this._originFromUrl(chapterUrl)
+            const imageReferer = chapterUrl.split("?")[0]
             const pages: ChapterPage[] = []
             const seen = new Set<string>()
             const imageRegexes = [
                 /<div[^>]*class="[^"]*page-break[^"]*"[^>]*>[\s\S]*?<img[^>]+(?:data-src|data-lazy-src|data-cfsrc|src)="([^"]+)"/gi,
                 /<li[^>]*class="[^"]*blocks-gallery-item[^"]*"[^>]*>[\s\S]*?<img[^>]+(?:data-src|data-lazy-src|data-cfsrc|src)="([^"]+)"/gi,
                 /<img[^>]*class="[^"]*wp-manga-chapter-img[^"]*"[^>]+(?:data-src|data-lazy-src|data-cfsrc|src)="([^"]+)"/gi,
+                /<img[^>]*id="image-\d+"[^>]+(?:data-src|data-lazy-src|data-cfsrc|src)="([^"]+)"/gi,
             ]
 
             for (const regex of imageRegexes) {
@@ -184,8 +186,10 @@ class Provider {
                         url: imageUrl,
                         index: pages.length,
                         headers: {
-                            Referer: chapterUrl,
+                            Referer: imageReferer,
                             Origin: origin,
+                            "User-Agent": "Mozilla/5.0",
+                            "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
                         },
                     })
                 }
@@ -211,8 +215,10 @@ class Provider {
                         url: imageUrl,
                         index: pages.length,
                         headers: {
-                            Referer: chapterUrl,
+                            Referer: imageReferer,
                             Origin: origin,
+                            "User-Agent": "Mozilla/5.0",
+                            "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
                         },
                     })
                 }
