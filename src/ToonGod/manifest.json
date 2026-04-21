@@ -1,0 +1,13 @@
+{
+  "id": "toongod",
+  "name": "ToonGod",
+  "version": "0.0.0",
+  "manifestURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/ToonGod/manifest.json",
+  "language": "typescript",
+  "type": "manga-provider",
+  "description": "Manga provider for ToonGod",
+  "author": "mohaisreal",
+  "icon": "https://www.toongod.org/favicon.ico",
+  "lang": "en",
+  "payloadURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/ToonGod/main.ts"
+}
