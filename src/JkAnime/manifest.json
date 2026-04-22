@@ -7,7 +7,7 @@
   "type": "onlinestream-provider",
   "description": "JkAnime is an online streaming provider for spanish subs.",
   "author": "mohaisreal",
-  "icon": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/JkAnime/image.png",
+  "icon": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/JkAnime/favicon.ico",
   "lang": "es",
   "payloadURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/JkAnime/main.ts"
 }
