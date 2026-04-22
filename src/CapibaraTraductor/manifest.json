@@ -7,7 +7,7 @@
   "type": "manga-provider",
   "description": "El Hub de tus Scans Favoritos. Proveedor de manga en español.",
   "author": "mohaisreal",
-  "icon": "https://capibaratraductor.com/images/faviconcaptrad.png",
+  "icon": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/CapibaraTraductor/faviconcaptrad.png",
   "lang": "es",
   "payloadURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/CapibaraTraductor/main.ts"
 }
