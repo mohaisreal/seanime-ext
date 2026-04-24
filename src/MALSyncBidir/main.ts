@@ -290,6 +290,131 @@ function init() {
       pollEveryMinutes: 15,
     };
 
+    function nowHHMMSS() {
+      const now = new Date();
+      return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
+    }
+
+    function asNumber(v: any, fallback = 0) {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : fallback;
+    }
+
+    function clamp(min: number, max: number, value: number) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function parseDateToFuzzy(value?: string): $app.AL_FuzzyDateInput | undefined {
+      if (!value || typeof value !== "string") return undefined;
+      const chunks = value.split("-");
+      if (!chunks.length) return undefined;
+      const year = asNumber(chunks[0], 0);
+      const month = asNumber(chunks[1], 0);
+      const day = asNumber(chunks[2], 0);
+      if (!year) return undefined;
+      return {
+        year,
+        month: month || undefined,
+        day: day || undefined,
+      };
+    }
+
+    function fuzzyToDateString(value?: $app.AL_FuzzyDateInput): string | undefined {
+      if (!value || !value.year) return undefined;
+      const month = String(value.month ?? 1).padStart(2, "0");
+      const day = String(value.day ?? 1).padStart(2, "0");
+      return `${value.year}-${month}-${day}`;
+    }
+
+    function sameDateFuzzy(a?: $app.AL_FuzzyDateInput, b?: $app.AL_FuzzyDateInput) {
+      return (a?.year ?? 0) === (b?.year ?? 0) &&
+        (a?.month ?? 0) === (b?.month ?? 0) &&
+        (a?.day ?? 0) === (b?.day ?? 0);
+    }
+
+    function encodeForm(body: Record<string, string | number | boolean | undefined>) {
+      const chunks: string[] = [];
+      for (const key in body) {
+        const val = body[key];
+        if (val === undefined || val === null) continue;
+        chunks.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(val))}`);
+      }
+      return chunks.join("&");
+    }
+
+    function safeJson(value: any) {
+      try {
+        return JSON.stringify(value);
+      } catch (_) {
+        return "[unserializable]";
+      }
+    }
+
+    function normalizeAniStatusToMal(kind: MediaKind, status?: $app.AL_MediaListStatus): MalStatus | undefined {
+      if (!status) return undefined;
+
+      if (kind === "ANIME") {
+        const map: Record<string, MalAnimeStatus> = {
+          COMPLETED: "completed",
+          CURRENT: "watching",
+          DROPPED: "dropped",
+          PAUSED: "on_hold",
+          PLANNING: "plan_to_watch",
+          REPEATING: "watching",
+        };
+        return map[status];
+      }
+
+      const mangaMap: Record<string, MalMangaStatus> = {
+        COMPLETED: "completed",
+        CURRENT: "reading",
+        DROPPED: "dropped",
+        PAUSED: "on_hold",
+        PLANNING: "plan_to_read",
+        REPEATING: "reading",
+      };
+      return mangaMap[status];
+    }
+
+    function normalizeMalStatusToAni(kind: MediaKind, status?: string): $app.AL_MediaListStatus | undefined {
+      if (!status) return undefined;
+
+      if (kind === "ANIME") {
+        const map: Record<string, $app.AL_MediaListStatus> = {
+          completed: "COMPLETED",
+          watching: "CURRENT",
+          dropped: "DROPPED",
+          on_hold: "PAUSED",
+          plan_to_watch: "PLANNING",
+        };
+        return map[status];
+      }
+
+      const mangaMap: Record<string, $app.AL_MediaListStatus> = {
+        completed: "COMPLETED",
+        reading: "CURRENT",
+        dropped: "DROPPED",
+        on_hold: "PAUSED",
+        plan_to_read: "PLANNING",
+      };
+      return mangaMap[status];
+    }
+
+    function normalizeAniScoreToMal(scoreRaw: number) {
+      if (!scoreRaw) return 0;
+      if (scoreRaw > 10) return clamp(0, 10, Math.round(scoreRaw / 10));
+      return clamp(0, 10, Math.round(scoreRaw));
+    }
+
+    function coreFingerprint(entry: {
+      status?: any;
+      score?: number;
+      progress?: number;
+      repeat?: number;
+    }) {
+      return `${entry.status ?? "null"}|${entry.score ?? 0}|${entry.progress ?? 0}|${entry.repeat ?? 0}`;
+    }
+
     const logs = ctx.state<LogEntry[]>([]);
     const statusText = ctx.state("Idle");
     const isSyncing = ctx.state(false);
