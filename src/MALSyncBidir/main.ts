@@ -417,7 +417,17 @@ function init() {
     const logs = ctx.state<LogEntry[]>([]);
     const statusText = ctx.state("Idle");
     const isSyncing = ctx.state(false);
+    const activeSyncMode = ctx.state<SyncMode | null>(null);
     const lastRun = ctx.state<string>("Never");
+    const lastSyncSummary = ctx.state<{
+      intent: "info" | "success" | "warning" | "alert";
+      title: string;
+      detail: string;
+    }>({
+      intent: "info",
+      title: "Esperando acción",
+      detail: "Elegí un modo de sincronización para empezar.",
+    });
     const settingsFeedback = ctx.state("");
     const authFeedback = ctx.state("");
     const isAuthenticated = ctx.state<boolean>(Boolean($storage.get(STORAGE.ACCESS_TOKEN)));
@@ -438,6 +448,67 @@ function init() {
     function addLog(message: string, type: LogEntry["type"] = "info") {
       logs.set((prev) => [{ at: nowHHMMSS(), type, message }, ...prev].slice(0, 250));
       statusText.set(message);
+    }
+
+    function wait(ms: number) {
+      return new Promise<void>((resolve) => {
+        ctx.setTimeout(resolve, ms);
+      });
+    }
+
+    function toErrorMessage(err: unknown) {
+      if (!err) return "Error desconocido";
+      if (typeof err === "string") return err;
+      return (err as any)?.message || String(err);
+    }
+
+    function explainSyncError(rawMessage: string) {
+      if (/context deadline exceeded/i.test(rawMessage)) {
+        return "Timeout contra MAL (posible rate limit o latencia). Reintentá en 1-2 minutos.";
+      }
+      if (/error\.json/i.test(rawMessage)) {
+        return "MAL respondió con endpoint de error. Suele pasar por timeout/rate limit o payload inválido.";
+      }
+      return rawMessage;
+    }
+
+    function assertValidMalId(kind: MediaKind, malId: number, phase: string) {
+      if (!Number.isFinite(malId) || malId <= 0) {
+        throw new Error(`[${phase}] MAL ID inválido para ${kind}: ${String(malId)}`);
+      }
+    }
+
+    async function fetchWithRetry(
+      url: string,
+      options: $ui.FetchOptions,
+      label: string,
+      attempts = 3,
+    ) {
+      let lastError: any;
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+          const reqOptions = options?.timeout ? options : { ...options, timeout: 30 };
+          const res = await ctx.fetch(url, reqOptions);
+          const shouldRetryStatus = res.status === 429 || res.status >= 500;
+          if (shouldRetryStatus && attempt < attempts) {
+            addLog(`${label}: HTTP ${res.status}, reintento ${attempt + 1}/${attempts}`, "warn");
+            await wait(600 * attempt);
+            continue;
+          }
+          return res;
+        } catch (err) {
+          lastError = err;
+          const msg = toErrorMessage(err);
+          const retryable = /deadline exceeded|timeout|temporarily unavailable|connection reset|eof/i.test(msg);
+          if (retryable && attempt < attempts) {
+            addLog(`${label}: timeout/red, reintento ${attempt + 1}/${attempts}`, "warn");
+            await wait(700 * attempt);
+            continue;
+          }
+          throw err;
+        }
+      }
+      throw lastError;
     }
 
     function loadSettings(): SyncSettings {
@@ -539,13 +610,13 @@ function init() {
           redirect_uri: REDIRECT_URI,
         });
 
-        const res = await ctx.fetch(MAL_TOKEN_URI, {
+        const res = await fetchWithRetry(MAL_TOKEN_URI, {
           method: "POST",
           headers: {
             "Content-Type": "application/x-www-form-urlencoded",
           },
           body,
-        });
+        }, "Token exchange");
 
         if (!res.ok) throw new Error(`Token exchange falló (${res.status})`);
         const data = await res.json();
@@ -573,13 +644,13 @@ function init() {
           client_secret: clientSecret || undefined,
         });
 
-        const res = await ctx.fetch(MAL_TOKEN_URI, {
+        const res = await fetchWithRetry(MAL_TOKEN_URI, {
           method: "POST",
           headers: {
             "Content-Type": "application/x-www-form-urlencoded",
           },
           body,
-        });
+        }, "Token refresh");
 
         if (!res.ok) throw new Error(`Refresh token falló (${res.status})`);
         const data = await res.json();
@@ -607,7 +678,7 @@ function init() {
 
         while (nextUrl && guard < 10_000) {
           guard += 1;
-          const res = await ctx.fetch(nextUrl, { headers: await tokenManager.withAuthHeaders() });
+          const res = await fetchWithRetry(nextUrl, { headers: await tokenManager.withAuthHeaders() }, "MAL fetch list");
           if (!res.ok) throw new Error(`MAL list fetch falló (${res.status})`);
 
           const page = await res.json() as MalListPage;
@@ -629,9 +700,11 @@ function init() {
       },
 
       async getAnimeStatus(malId: number): Promise<MalCoreEntry | undefined> {
-        const res = await ctx.fetch(
+        assertValidMalId("ANIME", malId, "getAnimeStatus");
+        const res = await fetchWithRetry(
           `${MAL_API_BASE}/anime/${malId}?fields=my_list_status{status,score,num_watched_episodes,is_rewatching,num_times_rewatched,start_date,finish_date}`,
           { headers: await tokenManager.withAuthHeaders() },
+          `MAL get anime ${malId}`,
         );
         if (!res.ok) {
           if (res.status === 404) return undefined;
@@ -642,9 +715,11 @@ function init() {
       },
 
       async getMangaStatus(malId: number): Promise<MalCoreEntry | undefined> {
-        const res = await ctx.fetch(
+        assertValidMalId("MANGA", malId, "getMangaStatus");
+        const res = await fetchWithRetry(
           `${MAL_API_BASE}/manga/${malId}?fields=my_list_status{status,score,num_chapters_read,is_rereading,num_times_reread,start_date,finish_date}`,
           { headers: await tokenManager.withAuthHeaders() },
+          `MAL get manga ${malId}`,
         );
         if (!res.ok) {
           if (res.status === 404) return undefined;
@@ -655,6 +730,7 @@ function init() {
       },
 
       async upsertAnime(target: MalCoreEntry) {
+        assertValidMalId("ANIME", target.malId, "upsertAnime");
         const body = encodeForm({
           status: target.status as MalAnimeStatus,
           score: clamp(0, 10, target.score),
@@ -665,18 +741,19 @@ function init() {
           finish_date: target.completedAt,
         });
 
-        const res = await ctx.fetch(`${MAL_API_BASE}/anime/${target.malId}/my_list_status`, {
+        const res = await fetchWithRetry(`${MAL_API_BASE}/anime/${target.malId}/my_list_status`, {
           method: "PUT",
           headers: {
             ...(await tokenManager.withAuthHeaders()),
             "Content-Type": "application/x-www-form-urlencoded",
           },
           body,
-        });
+        }, `MAL upsert anime ${target.malId}`);
         if (!res.ok) throw new Error(`No pude upsert anime MAL (${res.status})`);
       },
 
       async upsertManga(target: MalCoreEntry) {
+        assertValidMalId("MANGA", target.malId, "upsertManga");
         const body = encodeForm({
           status: target.status as MalMangaStatus,
           score: clamp(0, 10, target.score),
@@ -687,23 +764,24 @@ function init() {
           finish_date: target.completedAt,
         });
 
-        const res = await ctx.fetch(`${MAL_API_BASE}/manga/${target.malId}/my_list_status`, {
+        const res = await fetchWithRetry(`${MAL_API_BASE}/manga/${target.malId}/my_list_status`, {
           method: "PUT",
           headers: {
             ...(await tokenManager.withAuthHeaders()),
             "Content-Type": "application/x-www-form-urlencoded",
           },
           body,
-        });
+        }, `MAL upsert manga ${target.malId}`);
         if (!res.ok) throw new Error(`No pude upsert manga MAL (${res.status})`);
       },
 
       async remove(kind: MediaKind, malId: number) {
+        assertValidMalId(kind, malId, "remove");
         const endpoint = kind === "ANIME" ? "anime" : "manga";
-        const res = await ctx.fetch(`${MAL_API_BASE}/${endpoint}/${malId}/my_list_status`, {
+        const res = await fetchWithRetry(`${MAL_API_BASE}/${endpoint}/${malId}/my_list_status`, {
           method: "DELETE",
           headers: await tokenManager.withAuthHeaders(),
-        });
+        }, `MAL delete ${kind} ${malId}`);
         if (!res.ok && res.status !== 404) throw new Error(`No pude borrar entrada MAL (${res.status})`);
       },
     };
@@ -940,10 +1018,10 @@ function init() {
       addLog(`Live sync ${kind} ${target.malId} -> MAL`, "success");
     }
 
-    async function syncAniToMalBatch(kind: MediaKind) {
+    async function syncAniToMalBatch(kind: MediaKind): Promise<number> {
       const settings = loadSettings();
-      if (kind === "ANIME" && !settings.includeAnime) return;
-      if (kind === "MANGA" && !settings.includeManga) return;
+      if (kind === "ANIME" && !settings.includeAnime) return 0;
+      if (kind === "MANGA" && !settings.includeManga) return 0;
 
       const aniMap = aniListAdapter.getCollectionMap(kind);
       const malMap = new Map<number, MalCoreEntry>();
@@ -986,12 +1064,13 @@ function init() {
       }
 
       addLog(`Batch ANI->MAL ${kind}: ${changed} cambios`, "success");
+      return changed;
     }
 
-    async function syncMalToAniBatch(kind: MediaKind) {
+    async function syncMalToAniBatch(kind: MediaKind): Promise<number> {
       const settings = loadSettings();
-      if (kind === "ANIME" && !settings.includeAnime) return;
-      if (kind === "MANGA" && !settings.includeManga) return;
+      if (kind === "ANIME" && !settings.includeAnime) return 0;
+      if (kind === "MANGA" && !settings.includeManga) return 0;
 
       const aniMap = aniListAdapter.getCollectionMap(kind);
       const malMap = new Map<number, MalCoreEntry>();
@@ -1046,31 +1125,65 @@ function init() {
 
       aniListAdapter.refresh(kind);
       addLog(`Batch MAL->ANI ${kind}: ${changed} cambios`, "success");
+      return changed;
     }
 
     async function runSync(mode: SyncMode) {
-      if (isSyncing.get()) return;
+      if (isSyncing.get()) {
+        ctx.toast.info("Ya hay un sync en curso");
+        return;
+      }
       isSyncing.set(true);
+      activeSyncMode.set(mode);
 
       try {
         statusText.set(`Sync ${mode} en progreso...`);
+        lastSyncSummary.set({
+          intent: "info",
+          title: "Sincronizando…",
+          detail: `Ejecutando ${mode}. Esto puede tardar unos segundos.`,
+        });
+        ctx.toast.info(`Iniciando sync ${mode}`);
         await tokenManager.refreshIfNeeded();
 
+        let aniToMalAnime = 0;
+        let aniToMalManga = 0;
+        let malToAniAnime = 0;
+        let malToAniManga = 0;
+
         if (mode === "ANI_TO_MAL" || mode === "BIDIRECTIONAL") {
-          await syncAniToMalBatch("ANIME");
-          await syncAniToMalBatch("MANGA");
+          aniToMalAnime = await syncAniToMalBatch("ANIME");
+          aniToMalManga = await syncAniToMalBatch("MANGA");
         }
         if (mode === "MAL_TO_ANI" || mode === "BIDIRECTIONAL") {
-          await syncMalToAniBatch("ANIME");
-          await syncMalToAniBatch("MANGA");
+          malToAniAnime = await syncMalToAniBatch("ANIME");
+          malToAniManga = await syncMalToAniBatch("MANGA");
         }
 
+        const totalChanges = aniToMalAnime + aniToMalManga + malToAniAnime + malToAniManga;
+        const summary = `ANI→MAL A:${aniToMalAnime} M:${aniToMalManga} | MAL→ANI A:${malToAniAnime} M:${malToAniManga}`;
+
         lastRun.set(new Date().toISOString());
-        addLog(`Sync ${mode} finalizado`, "success");
+        lastSyncSummary.set({
+          intent: "success",
+          title: `Sync ${mode} completado`,
+          detail: `${summary}. Total cambios: ${totalChanges}`,
+        });
+        addLog(`Sync ${mode} finalizado | ${summary}`, "success");
+        ctx.toast.success(`Sync completado (${totalChanges} cambios)`);
       } catch (err) {
-        addLog(`Sync error: ${(err as Error).message}`, "error");
+        const raw = toErrorMessage(err);
+        const explained = explainSyncError(raw);
+        lastSyncSummary.set({
+          intent: "alert",
+          title: `Sync ${mode} falló`,
+          detail: explained,
+        });
+        addLog(`Sync error: ${explained}`, "error");
+        ctx.toast.error(`Sync falló: ${explained}`);
       } finally {
         isSyncing.set(false);
+        activeSyncMode.set(null);
       }
     }
 
@@ -1192,66 +1305,153 @@ function init() {
     tray.render(() => {
       const authUrl = buildAuthUrl();
       const currentLogs = logs.get();
+      const summary = lastSyncSummary.get();
+      const syncing = isSyncing.get();
+      const activeMode = activeSyncMode.get();
+      const authOk = isAuthenticated.get();
+      const pollEvery = clamp(5, 60, asNumber(pollEveryMinutesRef.current, DEFAULT_SETTINGS.pollEveryMinutes));
 
       return tray.stack([
-          tray.text("MALSync Bidir", {
-            style: { fontWeight: "bold", fontSize: "16px", textAlign: "center" },
-          }),
-          tray.text(`Estado: ${statusText.get()}`),
-          tray.text(`Autenticado MAL: ${isAuthenticated.get() ? "Sí" : "No"}`),
-          tray.text(`Última corrida: ${lastRun.get()}`),
-
-          tray.text("Alcance actual: Anime + Manga core. num_volumes_read se ignora por diseño."),
-
-          tray.text("---- Config MAL ----", { style: { fontWeight: "bold" } }),
-          tray.input({ fieldRef: clientIdRef, label: "Client ID", placeholder: "MAL Client ID" }),
-          tray.input({ fieldRef: clientSecretRef, label: "Client Secret", placeholder: "MAL Client Secret" }),
+        tray.css(`
+          .malsync-shell { padding: 2px; }
+          .malsync-card { border: 1px solid hsl(var(--border)); border-radius: 12px; padding: 12px; background: hsl(var(--background)); }
+          .malsync-muted { font-size: 12px; opacity: 0.75; }
+        `),
+        tray.div([
           tray.flex([
-            tray.button({ label: "Guardar config", onClick: "save-config", intent: "gray-subtle" }),
-            tray.button({ label: "Generar PKCE verifier", onClick: "generate-verifier", intent: "gray-subtle" }),
-          ], { gap: 8 }),
-          authUrl ? tray.anchor({
-            href: authUrl,
-            text: "Abrir autorización MAL",
-            target: "_blank",
-          }) : tray.text("Generá verifier para habilitar link de autorización"),
-          tray.input({ fieldRef: authCodeRef, label: "Auth code o URL callback", placeholder: "Pegá el code o URL completa" }),
-          tray.button({ label: "Intercambiar code por token", onClick: "exchange-code", intent: "primary" }),
-          authFeedback.get() ? tray.text(authFeedback.get()) : null,
+            tray.stack([
+              tray.text("FullMALSync", { style: { fontWeight: "700", fontSize: "17px" } }),
+              tray.text("AniList ↔ MyAnimeList · Anime + Manga", { className: "malsync-muted" }),
+            ], { gap: 2 }),
+            tray.badge(syncing ? `Sync ${activeMode || ""}` : (authOk ? "MAL conectado" : "MAL no conectado"), {
+              intent: syncing ? "info" : (authOk ? "success" : "warning"),
+              size: "md",
+            }),
+          ], { gap: 8, style: { alignItems: "center", justifyContent: "space-between" } }),
 
-          tray.text("---- Preferencias ----", { style: { fontWeight: "bold" } }),
-          tray.select({
-            label: "Modo por defecto",
-            fieldRef: modeRef,
-            options: [
-              { label: "BIDIRECTIONAL", value: "BIDIRECTIONAL" },
-              { label: "ANI_TO_MAL", value: "ANI_TO_MAL" },
-              { label: "MAL_TO_ANI", value: "MAL_TO_ANI" },
-            ],
-          }),
-          tray.checkbox({ fieldRef: liveSyncRef, label: "Live sync AniList -> MAL por hooks" }),
-          tray.checkbox({ fieldRef: includeAnimeRef, label: "Incluir Anime" }),
-          tray.checkbox({ fieldRef: includeMangaRef, label: "Incluir Manga" }),
-          tray.checkbox({ fieldRef: syncDeletionsRef, label: "Sincronizar borrados (cuidado)" }),
-          tray.checkbox({ fieldRef: pollEnabledRef, label: "Polling MAL -> AniList" }),
-          tray.input({ fieldRef: pollEveryMinutesRef, label: "Polling cada X min (5-60)", placeholder: "15" }),
-          tray.button({ label: "Guardar preferencias", onClick: "save-preferences", intent: "gray-subtle" }),
-          settingsFeedback.get() ? tray.text(settingsFeedback.get()) : null,
+          tray.tabs([
+            tray.tabsList([
+              tray.tabsTrigger("Panel", { value: "panel" }),
+              tray.tabsTrigger("Configuración", { value: "config" }),
+              tray.tabsTrigger("Logs", { value: "logs" }),
+            ]),
 
-          tray.text("---- Acciones ----", { style: { fontWeight: "bold" } }),
-          tray.flex([
-            tray.button({ label: "Sync modo por defecto", onClick: "sync-default", intent: "primary" }),
-            tray.button({ label: "ANI -> MAL", onClick: "sync-ani-to-mal", intent: "gray-subtle" }),
-            tray.button({ label: "MAL -> ANI", onClick: "sync-mal-to-ani", intent: "gray-subtle" }),
-            tray.button({ label: "Limpiar logs", onClick: "clear-logs", intent: "gray" }),
-          ], { gap: 8 }),
+            tray.tabsContent([
+              tray.alert({
+                title: summary.title,
+                description: summary.detail,
+                intent: summary.intent,
+              }),
+              tray.flex([
+                tray.badge(`Estado: ${statusText.get()}`, { intent: "gray", size: "sm" }),
+                tray.badge(`Polling: ${pollEnabledRef.current ? `ON (${pollEvery}m)` : "OFF"}`, {
+                  intent: pollEnabledRef.current ? "info" : "gray",
+                  size: "sm",
+                }),
+                tray.badge(`Última corrida: ${lastRun.get()}`, { intent: "gray", size: "sm" }),
+              ], { gap: 6 }),
+              tray.flex([
+                tray.button({
+                  label: "Sync modo por defecto",
+                  onClick: "sync-default",
+                  intent: "primary",
+                  loading: syncing && modeRef.current === activeMode,
+                  disabled: syncing,
+                }),
+                tray.button({
+                  label: "ANI → MAL",
+                  onClick: "sync-ani-to-mal",
+                  intent: "gray-subtle",
+                  loading: syncing && activeMode === "ANI_TO_MAL",
+                  disabled: syncing,
+                }),
+                tray.button({
+                  label: "MAL → ANI",
+                  onClick: "sync-mal-to-ani",
+                  intent: "gray-subtle",
+                  loading: syncing && activeMode === "MAL_TO_ANI",
+                  disabled: syncing,
+                }),
+              ], { gap: 8 }),
+              tray.text("Tip: si ves 'context deadline exceeded', suele ser timeout/rate limit temporal de MAL.", {
+                className: "malsync-muted",
+              }),
+            ], { value: "panel", style: { marginTop: "10px" } }),
 
-          tray.text("---- Logs ----", { style: { fontWeight: "bold" } }),
-          tray.stack(
-            currentLogs.slice(0, 20).map((log) => tray.text(`[${log.at}] ${log.type.toUpperCase()}: ${log.message}`)),
-            { gap: 4 },
-          ),
-        ].filter(Boolean as any), { gap: 12 });
+            tray.tabsContent([
+              tray.text("OAuth MyAnimeList", { style: { fontWeight: "600" } }),
+              tray.input({ fieldRef: clientIdRef, label: "Client ID", placeholder: "MAL Client ID" }),
+              tray.input({ fieldRef: clientSecretRef, label: "Client Secret", placeholder: "MAL Client Secret" }),
+              tray.flex([
+                tray.button({ label: "Guardar config", onClick: "save-config", intent: "gray-subtle" }),
+                tray.button({ label: "Generar PKCE verifier", onClick: "generate-verifier", intent: "gray-subtle" }),
+              ], { gap: 8 }),
+              authUrl ? tray.anchor({
+                href: authUrl,
+                text: "Abrir autorización MAL",
+                target: "_blank",
+              }) : tray.alert({
+                title: "Falta PKCE link",
+                description: "Guardá Client ID y generá verifier para habilitar el link de autorización.",
+                intent: "warning",
+              }),
+              tray.input({ fieldRef: authCodeRef, label: "Auth code o URL callback", placeholder: "Pegá el code o URL completa" }),
+              tray.button({
+                label: "Intercambiar code por token",
+                onClick: "exchange-code",
+                intent: "primary",
+              }),
+              authFeedback.get() ? tray.alert({
+                title: "Estado de autenticación",
+                description: authFeedback.get(),
+                intent: authFeedback.get().includes("✅") ? "success" : "info",
+              }) : null,
+
+              tray.text("Preferencias de sincronización", { style: { fontWeight: "600", marginTop: "8px" } }),
+              tray.select({
+                label: "Modo por defecto",
+                fieldRef: modeRef,
+                options: [
+                  { label: "BIDIRECTIONAL", value: "BIDIRECTIONAL" },
+                  { label: "ANI_TO_MAL", value: "ANI_TO_MAL" },
+                  { label: "MAL_TO_ANI", value: "MAL_TO_ANI" },
+                ],
+              }),
+              tray.switch({ fieldRef: liveSyncRef, label: "Live sync AniList -> MAL por hooks" }),
+              tray.checkbox({ fieldRef: includeAnimeRef, label: "Incluir Anime" }),
+              tray.checkbox({ fieldRef: includeMangaRef, label: "Incluir Manga" }),
+              tray.checkbox({ fieldRef: syncDeletionsRef, label: "Sincronizar borrados (cuidado)" }),
+              tray.switch({ fieldRef: pollEnabledRef, label: "Polling MAL -> AniList" }),
+              tray.input({ fieldRef: pollEveryMinutesRef, label: "Polling cada X min (5-60)", placeholder: "15" }),
+              tray.button({ label: "Guardar preferencias", onClick: "save-preferences", intent: "gray-subtle" }),
+              settingsFeedback.get() ? tray.text(settingsFeedback.get(), { className: "malsync-muted" }) : null,
+            ].filter(Boolean as any), { value: "config", style: { marginTop: "10px" } }),
+
+            tray.tabsContent([
+              tray.flex([
+                tray.text("Registros recientes", { style: { fontWeight: "600" } }),
+                tray.button({ label: "Limpiar logs", onClick: "clear-logs", intent: "gray", size: "sm" }),
+              ], { gap: 8, style: { justifyContent: "space-between", alignItems: "center" } }),
+              tray.div([
+                tray.stack(
+                  (currentLogs.length ? currentLogs : [{ at: nowHHMMSS(), type: "info", message: "Sin logs todavía." } as LogEntry])
+                    .slice(0, 40)
+                    .map((log) => tray.text(`[${log.at}] ${log.type.toUpperCase()}: ${log.message}`, { className: "malsync-muted" })),
+                  { gap: 4 },
+                ),
+              ], {
+                style: {
+                  maxHeight: "260px",
+                  overflow: "auto",
+                  border: "1px solid hsl(var(--border))",
+                  borderRadius: "10px",
+                  padding: "10px",
+                },
+              }),
+            ], { value: "logs", style: { marginTop: "10px" } }),
+          ], { defaultValue: "panel" }),
+        ], { className: "malsync-card" }),
+      ], { gap: 10, className: "malsync-shell" });
     });
 
     addLog("Plugin cargado. Configurá OAuth y corré sync.", "info");
