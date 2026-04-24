@@ -418,7 +418,6 @@ function init() {
     const statusText = ctx.state("Idle");
     const isSyncing = ctx.state(false);
     const activeSyncMode = ctx.state<SyncMode | null>(null);
-    const viewMode = ctx.state<"panel" | "config" | "logs">("panel");
     const lastRun = ctx.state<string>("Never");
     const lastSyncSummary = ctx.state<{
       intent: "info" | "success" | "warning" | "alert";
@@ -1287,18 +1286,6 @@ function init() {
       void runSync("MAL_TO_ANI");
     });
 
-    ctx.registerEventHandler("view-panel", () => {
-      viewMode.set("panel");
-    });
-
-    ctx.registerEventHandler("view-config", () => {
-      viewMode.set("config");
-    });
-
-    ctx.registerEventHandler("view-logs", () => {
-      viewMode.set("logs");
-    });
-
     ctx.registerEventHandler("clear-logs", () => {
       logs.set([]);
       statusText.set("Logs limpiados");
@@ -1325,7 +1312,6 @@ function init() {
       const activeMode = activeSyncMode.get();
       const authOk = isAuthenticated.get();
       const pollEvery = clamp(5, 60, asNumber(pollEveryMinutesRef.current, DEFAULT_SETTINGS.pollEveryMinutes));
-      const currentView = viewMode.get();
 
       return tray.stack([
         tray.css(`
@@ -1344,125 +1330,127 @@ function init() {
               size: "md",
             }),
           ], { gap: 8, style: { alignItems: "center", justifyContent: "space-between" } }),
-          tray.flex([
-            tray.button({ label: "Panel", onClick: "view-panel", intent: currentView === "panel" ? "primary" : "gray-subtle", size: "sm" }),
-            tray.button({ label: "Configuración", onClick: "view-config", intent: currentView === "config" ? "primary" : "gray-subtle", size: "sm" }),
-            tray.button({ label: "Logs", onClick: "view-logs", intent: currentView === "logs" ? "primary" : "gray-subtle", size: "sm" }),
-          ], { gap: 8, style: { marginTop: "10px" } }),
+          tray.tabs([
+            tray.tabsList([
+              tray.tabsTrigger(tray.text("Panel"), { value: "panel" }),
+              tray.tabsTrigger(tray.text("Configuración"), { value: "config" }),
+              tray.tabsTrigger(tray.text("Logs"), { value: "logs" }),
+            ], { style: { marginTop: "10px" } }),
 
-          currentView === "panel" ? tray.stack([
-            tray.alert({
-              title: summary.title,
-              description: summary.detail,
-              intent: summary.intent,
-            }),
-            tray.flex([
-              tray.badge(`Estado: ${statusText.get()}`, { intent: "gray", size: "sm" }),
-              tray.badge(`Polling: ${pollEnabledRef.current ? `ON (${pollEvery}m)` : "OFF"}`, {
-                intent: pollEnabledRef.current ? "info" : "gray",
-                size: "sm",
+            tray.tabsContent([
+              tray.alert({
+                title: summary.title,
+                description: summary.detail,
+                intent: summary.intent,
               }),
-              tray.badge(`Última corrida: ${lastRun.get()}`, { intent: "gray", size: "sm" }),
-            ], { gap: 6 }),
-            tray.flex([
+              tray.flex([
+                tray.badge(`Estado: ${statusText.get()}`, { intent: "gray", size: "sm" }),
+                tray.badge(`Polling: ${pollEnabledRef.current ? `ON (${pollEvery}m)` : "OFF"}`, {
+                  intent: pollEnabledRef.current ? "info" : "gray",
+                  size: "sm",
+                }),
+                tray.badge(`Última corrida: ${lastRun.get()}`, { intent: "gray", size: "sm" }),
+              ], { gap: 6 }),
+              tray.flex([
+                tray.button({
+                  label: "Sync modo por defecto",
+                  onClick: "sync-default",
+                  intent: "primary",
+                  loading: syncing && modeRef.current === activeMode,
+                  disabled: syncing,
+                }),
+                tray.button({
+                  label: "ANI → MAL",
+                  onClick: "sync-ani-to-mal",
+                  intent: "gray-subtle",
+                  loading: syncing && activeMode === "ANI_TO_MAL",
+                  disabled: syncing,
+                }),
+                tray.button({
+                  label: "MAL → ANI",
+                  onClick: "sync-mal-to-ani",
+                  intent: "gray-subtle",
+                  loading: syncing && activeMode === "MAL_TO_ANI",
+                  disabled: syncing,
+                }),
+              ], { gap: 8 }),
+              tray.text("Tip: si ves 'context deadline exceeded', suele ser timeout/rate limit temporal de MAL.", {
+                className: "malsync-muted",
+              }),
+            ], { value: "panel", style: { marginTop: "10px" } }),
+
+            tray.tabsContent([
+              tray.text("OAuth MyAnimeList", { style: { fontWeight: "600" } }),
+              tray.input({ fieldRef: clientIdRef, label: "Client ID", placeholder: "MAL Client ID" }),
+              tray.input({ fieldRef: clientSecretRef, label: "Client Secret", placeholder: "MAL Client Secret" }),
+              tray.flex([
+                tray.button({ label: "Guardar config", onClick: "save-config", intent: "gray-subtle" }),
+                tray.button({ label: "Generar PKCE verifier", onClick: "generate-verifier", intent: "gray-subtle" }),
+              ], { gap: 8 }),
+              authUrl ? tray.anchor({
+                href: authUrl,
+                text: "Abrir autorización MAL",
+                target: "_blank",
+              }) : tray.alert({
+                title: "Falta PKCE link",
+                description: "Guardá Client ID y generá verifier para habilitar el link de autorización.",
+                intent: "warning",
+              }),
+              tray.input({ fieldRef: authCodeRef, label: "Auth code o URL callback", placeholder: "Pegá el code o URL completa" }),
               tray.button({
-                label: "Sync modo por defecto",
-                onClick: "sync-default",
+                label: "Intercambiar code por token",
+                onClick: "exchange-code",
                 intent: "primary",
-                loading: syncing && modeRef.current === activeMode,
-                disabled: syncing,
               }),
-              tray.button({
-                label: "ANI → MAL",
-                onClick: "sync-ani-to-mal",
-                intent: "gray-subtle",
-                loading: syncing && activeMode === "ANI_TO_MAL",
-                disabled: syncing,
+              authFeedback.get() ? tray.alert({
+                title: "Estado de autenticación",
+                description: authFeedback.get(),
+                intent: authFeedback.get().includes("✅") ? "success" : "info",
+              }) : null,
+
+              tray.text("Preferencias de sincronización", { style: { fontWeight: "600", marginTop: "8px" } }),
+              tray.select({
+                label: "Modo por defecto",
+                fieldRef: modeRef,
+                options: [
+                  { label: "BIDIRECTIONAL", value: "BIDIRECTIONAL" },
+                  { label: "ANI_TO_MAL", value: "ANI_TO_MAL" },
+                  { label: "MAL_TO_ANI", value: "MAL_TO_ANI" },
+                ],
               }),
-              tray.button({
-                label: "MAL → ANI",
-                onClick: "sync-mal-to-ani",
-                intent: "gray-subtle",
-                loading: syncing && activeMode === "MAL_TO_ANI",
-                disabled: syncing,
+              tray.switch({ fieldRef: liveSyncRef, label: "Live sync AniList -> MAL por hooks" }),
+              tray.checkbox({ fieldRef: includeAnimeRef, label: "Incluir Anime" }),
+              tray.checkbox({ fieldRef: includeMangaRef, label: "Incluir Manga" }),
+              tray.checkbox({ fieldRef: syncDeletionsRef, label: "Sincronizar borrados (cuidado)" }),
+              tray.switch({ fieldRef: pollEnabledRef, label: "Polling MAL -> AniList" }),
+              tray.input({ fieldRef: pollEveryMinutesRef, label: "Polling cada X min (5-60)", placeholder: "15" }),
+              tray.button({ label: "Guardar preferencias", onClick: "save-preferences", intent: "gray-subtle" }),
+              settingsFeedback.get() ? tray.text(settingsFeedback.get(), { className: "malsync-muted" }) : null,
+            ].filter(Boolean as any), { value: "config", style: { marginTop: "10px" } }),
+
+            tray.tabsContent([
+              tray.flex([
+                tray.text("Registros recientes", { style: { fontWeight: "600" } }),
+                tray.button({ label: "Limpiar logs", onClick: "clear-logs", intent: "gray", size: "sm" }),
+              ], { gap: 8, style: { justifyContent: "space-between", alignItems: "center" } }),
+              tray.div([
+                tray.stack(
+                  (currentLogs.length ? currentLogs : [{ at: nowHHMMSS(), type: "info", message: "Sin logs todavía." } as LogEntry])
+                    .slice(0, 40)
+                    .map((log) => tray.text(`[${log.at}] ${log.type.toUpperCase()}: ${log.message}`, { className: "malsync-muted" })),
+                  { gap: 4 },
+                ),
+              ], {
+                style: {
+                  maxHeight: "260px",
+                  overflow: "auto",
+                  border: "1px solid hsl(var(--border))",
+                  borderRadius: "10px",
+                  padding: "10px",
+                },
               }),
-            ], { gap: 8 }),
-            tray.text("Tip: si ves 'context deadline exceeded', suele ser timeout/rate limit temporal de MAL.", {
-              className: "malsync-muted",
-            }),
-          ], { gap: 8, style: { marginTop: "10px" } }) : null,
-
-          currentView === "config" ? tray.stack([
-            tray.text("OAuth MyAnimeList", { style: { fontWeight: "600" } }),
-            tray.input({ fieldRef: clientIdRef, label: "Client ID", placeholder: "MAL Client ID" }),
-            tray.input({ fieldRef: clientSecretRef, label: "Client Secret", placeholder: "MAL Client Secret" }),
-            tray.flex([
-              tray.button({ label: "Guardar config", onClick: "save-config", intent: "gray-subtle" }),
-              tray.button({ label: "Generar PKCE verifier", onClick: "generate-verifier", intent: "gray-subtle" }),
-            ], { gap: 8 }),
-            authUrl ? tray.anchor({
-              href: authUrl,
-              text: "Abrir autorización MAL",
-              target: "_blank",
-            }) : tray.alert({
-              title: "Falta PKCE link",
-              description: "Guardá Client ID y generá verifier para habilitar el link de autorización.",
-              intent: "warning",
-            }),
-            tray.input({ fieldRef: authCodeRef, label: "Auth code o URL callback", placeholder: "Pegá el code o URL completa" }),
-            tray.button({
-              label: "Intercambiar code por token",
-              onClick: "exchange-code",
-              intent: "primary",
-            }),
-            authFeedback.get() ? tray.alert({
-              title: "Estado de autenticación",
-              description: authFeedback.get(),
-              intent: authFeedback.get().includes("✅") ? "success" : "info",
-            }) : null,
-
-            tray.text("Preferencias de sincronización", { style: { fontWeight: "600", marginTop: "8px" } }),
-            tray.select({
-              label: "Modo por defecto",
-              fieldRef: modeRef,
-              options: [
-                { label: "BIDIRECTIONAL", value: "BIDIRECTIONAL" },
-                { label: "ANI_TO_MAL", value: "ANI_TO_MAL" },
-                { label: "MAL_TO_ANI", value: "MAL_TO_ANI" },
-              ],
-            }),
-            tray.switch({ fieldRef: liveSyncRef, label: "Live sync AniList -> MAL por hooks" }),
-            tray.checkbox({ fieldRef: includeAnimeRef, label: "Incluir Anime" }),
-            tray.checkbox({ fieldRef: includeMangaRef, label: "Incluir Manga" }),
-            tray.checkbox({ fieldRef: syncDeletionsRef, label: "Sincronizar borrados (cuidado)" }),
-            tray.switch({ fieldRef: pollEnabledRef, label: "Polling MAL -> AniList" }),
-            tray.input({ fieldRef: pollEveryMinutesRef, label: "Polling cada X min (5-60)", placeholder: "15" }),
-            tray.button({ label: "Guardar preferencias", onClick: "save-preferences", intent: "gray-subtle" }),
-            settingsFeedback.get() ? tray.text(settingsFeedback.get(), { className: "malsync-muted" }) : null,
-          ].filter(Boolean as any), { gap: 8, style: { marginTop: "10px" } }) : null,
-
-          currentView === "logs" ? tray.stack([
-            tray.flex([
-              tray.text("Registros recientes", { style: { fontWeight: "600" } }),
-              tray.button({ label: "Limpiar logs", onClick: "clear-logs", intent: "gray", size: "sm" }),
-            ], { gap: 8, style: { justifyContent: "space-between", alignItems: "center" } }),
-            tray.div([
-              tray.stack(
-                (currentLogs.length ? currentLogs : [{ at: nowHHMMSS(), type: "info", message: "Sin logs todavía." } as LogEntry])
-                  .slice(0, 40)
-                  .map((log) => tray.text(`[${log.at}] ${log.type.toUpperCase()}: ${log.message}`, { className: "malsync-muted" })),
-                { gap: 4 },
-              ),
-            ], {
-              style: {
-                maxHeight: "260px",
-                overflow: "auto",
-                border: "1px solid hsl(var(--border))",
-                borderRadius: "10px",
-                padding: "10px",
-              },
-            }),
-          ], { gap: 8, style: { marginTop: "10px" } }) : null,
+            ], { value: "logs", style: { marginTop: "10px" } }),
+          ], { defaultValue: "panel" }),
         ].filter(Boolean as any), { className: "malsync-card" }),
       ], { gap: 10, className: "malsync-shell" });
     });
