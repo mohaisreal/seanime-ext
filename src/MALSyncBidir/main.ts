@@ -224,7 +224,38 @@ function coreFingerprint(entry: {
 }
 
 function init() {
+  $app.onPostUpdateEntry((e) => {
+    if (e.mediaId) {
+      $store.set("malsync_bidir.signal.post_update", {
+        mediaId: e.mediaId,
+        at: Date.now(),
+      });
+    }
+    e.next();
+  });
+
+  $app.onPostUpdateEntryProgress((e) => {
+    if (e.mediaId) {
+      $store.set("malsync_bidir.signal.post_update", {
+        mediaId: e.mediaId,
+        at: Date.now(),
+      });
+    }
+    e.next();
+  });
+
+  $app.onPostUpdateEntryRepeat((e) => {
+    if (e.mediaId) {
+      $store.set("malsync_bidir.signal.post_update", {
+        mediaId: e.mediaId,
+        at: Date.now(),
+      });
+    }
+    e.next();
+  });
+
   $ui.register((ctx) => {
+    const POST_UPDATE_SIGNAL_KEY = "malsync_bidir.signal.post_update";
     const MAL_API_BASE = "https://api.myanimelist.net/v2";
     const MAL_TOKEN_URI = "https://myanimelist.net/v1/oauth2/token";
     const MAL_AUTH_URI = "https://myanimelist.net/v1/oauth2/authorize";
@@ -1018,17 +1049,8 @@ function init() {
       statusText.set("Logs limpiados");
     });
 
-    $app.onPostUpdateEntry((e) => {
-      handlePostUpdate(e.mediaId);
-      e.next();
-    });
-    $app.onPostUpdateEntryProgress((e) => {
-      handlePostUpdate(e.mediaId);
-      e.next();
-    });
-    $app.onPostUpdateEntryRepeat((e) => {
-      handlePostUpdate(e.mediaId);
-      e.next();
+    $store.watch<{ mediaId?: number }>(POST_UPDATE_SIGNAL_KEY, (payload) => {
+      void handlePostUpdate(payload?.mediaId);
     });
 
     configurePolling();

@@ -1,7 +1,7 @@
 {
   "id": "fullmalsync",
   "name": "FullMALSync",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "manifestURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/dev/src/MALSyncBidir/manifest.json",
   "language": "typescript",
   "type": "plugin",
