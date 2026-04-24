@@ -261,7 +261,6 @@ function init() {
     const MAL_AUTH_URI = "https://myanimelist.net/v1/oauth2/authorize";
     const ICON_URL = "https://cdn.myanimelist.net/images/favicon.ico";
     const REDIRECT_URI = "http://localhost";
-    const POLL_CRON_ID = "malsync-bidir-poll";
     const LOOP_WINDOW_MS = 90 * 1000;
 
     const STORAGE = {
@@ -434,6 +433,7 @@ function init() {
     const syncDeletionsRef = ctx.fieldRef<boolean>($storage.get(STORAGE.SYNC_DELETIONS) ?? DEFAULT_SETTINGS.syncDeletions);
     const pollEnabledRef = ctx.fieldRef<boolean>($storage.get(STORAGE.POLL_MAL_ENABLED) ?? DEFAULT_SETTINGS.pollMalEnabled);
     const pollEveryMinutesRef = ctx.fieldRef<string>(String($storage.get(STORAGE.POLL_EVERY_MINUTES) ?? DEFAULT_SETTINGS.pollEveryMinutes));
+    let stopPollingTimer: (() => void) | undefined;
 
     function addLog(message: string, type: LogEntry["type"] = "info") {
       logs.set((prev) => [{ at: nowHHMMSS(), type, message }, ...prev].slice(0, 250));
@@ -1106,7 +1106,10 @@ function init() {
 
     function configurePolling() {
       const settings = loadSettings();
-      $cron.remove(POLL_CRON_ID);
+      if (stopPollingTimer) {
+        stopPollingTimer();
+        stopPollingTimer = undefined;
+      }
 
       if (!settings.pollMalEnabled) {
         addLog("Polling MAL desactivado", "info");
@@ -1114,12 +1117,11 @@ function init() {
       }
 
       const minutes = clamp(5, 60, settings.pollEveryMinutes);
-      const cronExpr = `*/${minutes} * * * *`;
-      $cron.add(POLL_CRON_ID, cronExpr, () => {
+      const intervalMs = minutes * 60 * 1000;
+      stopPollingTimer = ctx.setInterval(() => {
         if (isSyncing.get()) return;
-        runSync("MAL_TO_ANI");
-      });
-      if (!$cron.hasStarted()) $cron.start();
+        void runSync("MAL_TO_ANI");
+      }, intervalMs);
       addLog(`Polling MAL activo cada ${minutes} min`, "info");
     }
 

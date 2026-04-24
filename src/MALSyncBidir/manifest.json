@@ -1,14 +1,13 @@
 {
   "id": "fullmalsync",
   "name": "FullMALSync",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "manifestURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/dev/src/MALSyncBidir/manifest.json",
   "language": "typescript",
   "type": "plugin",
-  "description": "Sincroniza AniList ↔ MyAnimeList para anime y manga (campos core).",
+  "description": "Sincroniza AniList ↔ MyAnimeList para anime y manga.",
   "author": "mohaisreal",
   "icon": "https://cdn.myanimelist.net/images/favicon.ico",
-  "lang": "es",
   "payloadURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/dev/src/MALSyncBidir/main.ts",
   "plugin": {
     "version": "1",
