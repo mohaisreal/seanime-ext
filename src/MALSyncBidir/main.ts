@@ -98,40 +98,6 @@ interface MalListPage<TStatus = any> {
   };
 }
 
-const MAL_API_BASE = "https://api.myanimelist.net/v2";
-const MAL_TOKEN_URI = "https://myanimelist.net/v1/oauth2/token";
-const MAL_AUTH_URI = "https://myanimelist.net/v1/oauth2/authorize";
-const ICON_URL = "https://cdn.myanimelist.net/images/favicon.ico";
-const REDIRECT_URI = "http://localhost";
-const POLL_CRON_ID = "malsync-bidir-poll";
-const LOOP_WINDOW_MS = 90 * 1000;
-
-const STORAGE = {
-  CLIENT_ID: "malsync_bidir.clientId",
-  CLIENT_SECRET: "malsync_bidir.clientSecret",
-  PKCE_VERIFIER: "malsync_bidir.pkceVerifier",
-  ACCESS_TOKEN: "malsync_bidir.accessToken",
-  REFRESH_TOKEN: "malsync_bidir.refreshToken",
-  EXPIRES_AT: "malsync_bidir.expiresAt",
-  MODE: "malsync_bidir.mode",
-  LIVE_SYNC: "malsync_bidir.liveSync",
-  INCLUDE_ANIME: "malsync_bidir.includeAnime",
-  INCLUDE_MANGA: "malsync_bidir.includeManga",
-  SYNC_DELETIONS: "malsync_bidir.syncDeletions",
-  POLL_MAL_ENABLED: "malsync_bidir.pollMalEnabled",
-  POLL_EVERY_MINUTES: "malsync_bidir.pollEveryMinutes",
-};
-
-const DEFAULT_SETTINGS: SyncSettings = {
-  mode: "BIDIRECTIONAL",
-  liveSync: true,
-  includeAnime: true,
-  includeManga: true,
-  syncDeletions: false,
-  pollMalEnabled: true,
-  pollEveryMinutes: 15,
-};
-
 function nowHHMMSS() {
   const now = new Date();
   return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
@@ -259,6 +225,40 @@ function coreFingerprint(entry: {
 
 function init() {
   $ui.register((ctx) => {
+    const MAL_API_BASE = "https://api.myanimelist.net/v2";
+    const MAL_TOKEN_URI = "https://myanimelist.net/v1/oauth2/token";
+    const MAL_AUTH_URI = "https://myanimelist.net/v1/oauth2/authorize";
+    const ICON_URL = "https://cdn.myanimelist.net/images/favicon.ico";
+    const REDIRECT_URI = "http://localhost";
+    const POLL_CRON_ID = "malsync-bidir-poll";
+    const LOOP_WINDOW_MS = 90 * 1000;
+
+    const STORAGE = {
+      CLIENT_ID: "malsync_bidir.clientId",
+      CLIENT_SECRET: "malsync_bidir.clientSecret",
+      PKCE_VERIFIER: "malsync_bidir.pkceVerifier",
+      ACCESS_TOKEN: "malsync_bidir.accessToken",
+      REFRESH_TOKEN: "malsync_bidir.refreshToken",
+      EXPIRES_AT: "malsync_bidir.expiresAt",
+      MODE: "malsync_bidir.mode",
+      LIVE_SYNC: "malsync_bidir.liveSync",
+      INCLUDE_ANIME: "malsync_bidir.includeAnime",
+      INCLUDE_MANGA: "malsync_bidir.includeManga",
+      SYNC_DELETIONS: "malsync_bidir.syncDeletions",
+      POLL_MAL_ENABLED: "malsync_bidir.pollMalEnabled",
+      POLL_EVERY_MINUTES: "malsync_bidir.pollEveryMinutes",
+    };
+
+    const DEFAULT_SETTINGS: SyncSettings = {
+      mode: "BIDIRECTIONAL",
+      liveSync: true,
+      includeAnime: true,
+      includeManga: true,
+      syncDeletions: false,
+      pollMalEnabled: true,
+      pollEveryMinutes: 15,
+    };
+
     const logs = ctx.state<LogEntry[]>([]);
     const statusText = ctx.state("Idle");
     const isSyncing = ctx.state(false);

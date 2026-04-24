@@ -1,7 +1,7 @@
 {
   "id": "fullmalsync",
   "name": "FullMALSync",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "manifestURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/dev/src/MALSyncBidir/manifest.json",
   "language": "typescript",
   "type": "plugin",
@@ -9,7 +9,7 @@
   "author": "mohaisreal",
   "icon": "https://cdn.myanimelist.net/images/favicon.ico",
   "lang": "es",
-  "payloadURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/dev/src/MALSyncBidir/main.ts",
+  "payloadURI": "C:/Users/Moha/Desktop/SeanimeExt/src/MALSyncBidir/main.ts",
   "plugin": {
     "version": "1",
     "permissions": {
