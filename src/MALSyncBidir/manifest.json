@@ -1,0 +1,26 @@
+{
+  "id": "fullmalsync",
+  "name": "FullMALSync",
+  "version": "0.1.0",
+  "manifestURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/dev/src/MALSyncBidir/manifest.json",
+  "language": "typescript",
+  "type": "plugin",
+  "description": "Sincroniza AniList ↔ MyAnimeList para anime y manga (campos core).",
+  "author": "mohaisreal",
+  "icon": "https://cdn.myanimelist.net/images/favicon.ico",
+  "lang": "es",
+  "payloadURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/dev/src/MALSyncBidir/main.ts",
+  "plugin": {
+    "version": "1",
+    "permissions": {
+      "scopes": ["storage", "anilist", "database", "anilist-token"],
+      "allow": {
+        "networkAccess": {
+          "allowedDomains": ["api.myanimelist.net", "myanimelist.net", "cdn.myanimelist.net"],
+          "reasoning": "Required for MAL OAuth and anime/manga list synchronization."
+        }
+      }
+    }
+  },
+  "isDevelopment": true
+}
