@@ -1301,7 +1301,7 @@ function init() {
       iconUrl: ICON_URL,
       withContent: true,
       width: "560px",
-      minHeight: "640px",
+      minHeight: "520px",
     });
 
     tray.render(() => {
@@ -1315,10 +1315,10 @@ function init() {
 
       return tray.stack([
         tray.css(`
-          .malsync-shell { padding: 14px; overflow-x: hidden; box-sizing: border-box; width: 100%; }
-          .malsync-card { border: 1px solid hsl(var(--border)); border-radius: 16px; padding: 16px; background: hsl(var(--background)); overflow-x: hidden; box-sizing: border-box; width: 100%; }
+          .malsync-shell { padding: 12px; overflow-x: hidden; box-sizing: border-box; width: 100%; }
+          .malsync-card { border: 1px solid hsl(var(--border)); border-radius: 14px; padding: 14px; background: hsl(var(--background)); overflow-x: hidden; box-sizing: border-box; width: 100%; }
           .malsync-muted { font-size: 12px; opacity: 0.75; line-height: 1.45; white-space: normal; }
-          .malsync-section-title { font-weight: 650; font-size: 13px; margin-top: 4px; }
+          .malsync-section-title { font-weight: 650; font-size: 13px; margin-top: 0; }
           .malsync-full { width: 100%; box-sizing: border-box; }
         `),
         tray.div([
@@ -1326,18 +1326,18 @@ function init() {
             tray.stack([
               tray.text("FullMALSync", { style: { fontWeight: "700", fontSize: "17px" } }),
               tray.text("AniList ↔ MyAnimeList · Anime + Manga", { className: "malsync-muted" }),
-            ], { gap: 2 }),
+            ], { gap: 1 }),
             tray.badge(syncing ? `Sync ${activeMode || ""}` : (authOk ? "MAL connected" : "MAL disconnected"), {
               intent: syncing ? "info" : (authOk ? "success" : "warning"),
               size: "md",
             }),
-          ], { gap: 8, style: { alignItems: "center", justifyContent: "space-between" } }),
+          ], { gap: 2, style: { alignItems: "center", justifyContent: "space-between" } }),
           tray.tabs([
             tray.tabsList([
               tray.tabsTrigger(tray.text("Panel"), { value: "panel" }),
               tray.tabsTrigger(tray.text("Config"), { value: "config" }),
               tray.tabsTrigger(tray.text("Logs"), { value: "logs" }),
-            ], { style: { marginTop: "16px", marginBottom: "12px", gap: "8px", width: "100%", overflowX: "hidden" } }),
+            ], { style: { marginTop: "10px", marginBottom: "8px", gap: "8px", width: "100%", overflowX: "hidden" } }),
 
             tray.tabsContent([
               tray.stack([
@@ -1354,8 +1354,8 @@ function init() {
                       size: "sm",
                     }),
                     tray.badge(`Last: ${lastRun.get()}`, { intent: "gray", size: "sm" }),
-                  ], { gap: 8, style: { flexWrap: "wrap" } }),
-                ], { gap: 8 }),
+                  ], { gap: 2, style: { flexWrap: "wrap" } }),
+                ], { gap: 2 }),
                 tray.stack([
                   tray.button({
                     label: "Sync default mode",
@@ -1381,12 +1381,12 @@ function init() {
                     disabled: syncing,
                     style: { width: "100%" },
                   }),
-                ], { gap: 10 }),
+                ], { gap: 3 }),
                 tray.text("Tip: if you see 'context deadline exceeded', it is usually a temporary MAL timeout/rate limit.", {
                   className: "malsync-muted",
                 }),
-              ], { gap: 14 }),
-            ], { value: "panel", style: { marginTop: "10px" } }),
+              ], { gap: 4 }),
+            ], { value: "panel", style: { marginTop: "4px" } }),
 
             tray.tabsContent([
               tray.stack([
@@ -1396,7 +1396,7 @@ function init() {
                 tray.stack([
                   tray.button({ label: "Save config", onClick: "save-config", intent: "gray-subtle", style: { width: "100%" } }),
                   tray.button({ label: "Generate PKCE verifier", onClick: "generate-verifier", intent: "gray-subtle", style: { width: "100%" } }),
-                ], { gap: 8 }),
+                ], { gap: 3 }),
                 authUrl ? tray.anchor({
                   href: authUrl,
                   text: "Open MAL authorization",
@@ -1437,21 +1437,21 @@ function init() {
                 tray.input({ fieldRef: pollEveryMinutesRef, label: "Poll every X min (5-60)", placeholder: "15" }),
                 tray.button({ label: "Save preferences", onClick: "save-preferences", intent: "gray-subtle", style: { width: "100%" } }),
                 settingsFeedback.get() ? tray.text(settingsFeedback.get(), { className: "malsync-muted" }) : null,
-              ].filter(Boolean as any), { gap: 14 }),
-            ].filter(Boolean as any), { value: "config", style: { marginTop: "10px" } }),
+              ].filter(Boolean as any), { gap: 4 }),
+            ].filter(Boolean as any), { value: "config", style: { marginTop: "4px" } }),
 
             tray.tabsContent([
               tray.stack([
                 tray.flex([
                   tray.text("Recent logs", { className: "malsync-section-title" }),
                   tray.button({ label: "Clear logs", onClick: "clear-logs", intent: "gray", size: "sm" }),
-                ], { gap: 8, style: { justifyContent: "space-between", alignItems: "center", flexWrap: "wrap" } }),
+                ], { gap: 2, style: { justifyContent: "space-between", alignItems: "center", flexWrap: "wrap" } }),
                 tray.div([
                   tray.stack(
                     (currentLogs.length ? currentLogs : [{ at: nowHHMMSS(), type: "info", message: "No logs yet." } as LogEntry])
                       .slice(0, 40)
                       .map((log) => tray.text(`[${log.at}] ${log.type.toUpperCase()}: ${log.message}`, { className: "malsync-muted" })),
-                    { gap: 6 },
+                    { gap: 1 },
                   ),
                 ], {
                   style: {
@@ -1465,11 +1465,11 @@ function init() {
                     width: "100%",
                   },
                 }),
-              ], { gap: 12 }),
-            ], { value: "logs", style: { marginTop: "10px" } }),
+              ], { gap: 3 }),
+            ], { value: "logs", style: { marginTop: "4px" } }),
           ], { defaultValue: "panel" }),
         ].filter(Boolean as any), { className: "malsync-card" }),
-      ], { gap: 10, className: "malsync-shell" });
+      ], { gap: 3, className: "malsync-shell" });
     });
 
     addLog("Plugin loaded. Configure OAuth and run sync.", "info");
