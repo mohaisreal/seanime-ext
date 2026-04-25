@@ -365,7 +365,10 @@ function init() {
       HISTORY_ANI_TO_MAL: "malsync_bidir.historyAniToMal",
       HISTORY_MAL_TO_ANI: "malsync_bidir.historyMalToAni",
       SYNC_SHADOW: "malsync_bidir.syncShadow",
+      SETTINGS_SCHEMA_VERSION: "malsync_bidir.settingsSchemaVersion",
     };
+
+    const SETTINGS_SCHEMA_VERSION = 2;
 
     const DEFAULT_SETTINGS: SyncSettings = {
       mode: "BIDIRECTIONAL",
@@ -545,6 +548,20 @@ function init() {
     function addLog(message: string, type: LogEntry["type"] = "info") {
       logs.set((prev) => [{ at: nowHHMMSS(), type, message }, ...prev].slice(0, 250));
       statusText.set(message);
+    }
+
+    function migrateSettingsIfNeeded() {
+      const currentVersion = asNumber($storage.get(STORAGE.SETTINGS_SCHEMA_VERSION), 0);
+      if (currentVersion >= SETTINGS_SCHEMA_VERSION) return;
+
+      const storedMode = $storage.get(STORAGE.MODE) as SyncMode | undefined;
+      if (!storedMode || storedMode === "ANI_TO_MAL") {
+        $storage.set(STORAGE.MODE, "BIDIRECTIONAL");
+        modeRef.setValue("BIDIRECTIONAL");
+        addLog("Migrated default mode to BIDIRECTIONAL. ANI_TO_MAL now only pushes queued changes.", "info");
+      }
+
+      $storage.set(STORAGE.SETTINGS_SCHEMA_VERSION, SETTINGS_SCHEMA_VERSION);
     }
 
     function addDebug(action: string, detail: any) {
@@ -1611,6 +1628,7 @@ function init() {
       shouldCancelSync.set(false);
       activeSyncMode.set(mode);
       resetProgress(`Starting ${mode}`);
+      const pendingAtStart = pendingCount();
 
       try {
         statusText.set(`Sync ${mode} in progress...`);
@@ -1647,18 +1665,23 @@ function init() {
         if (mode === "BIDIRECTIONAL" && total.failed === 0) {
           savePendingQueue({});
         }
+        const noPendingAniToMal = mode === "ANI_TO_MAL" && pendingAtStart === 0;
         const summary = mode === "BIDIRECTIONAL"
           ? `BIDIR A:${bidirAnime.changed}/${bidirAnime.deleted}/${bidirAnime.failed} M:${bidirManga.changed}/${bidirManga.deleted}/${bidirManga.failed} Conf:${bidirAnime.conflicts + bidirManga.conflicts}`
           : `ANI→MAL A:${aniToMalAnime.changed}/${aniToMalAnime.deleted}/${aniToMalAnime.failed} M:${aniToMalManga.changed}/${aniToMalManga.deleted}/${aniToMalManga.failed} | MAL→ANI A:${malToAniAnime.changed}/${malToAniAnime.deleted}/${malToAniAnime.failed} M:${malToAniManga.changed}/${malToAniManga.deleted}/${malToAniManga.failed}`;
 
         lastRun.set(new Date().toISOString());
         lastSyncSummary.set({
-          intent: shouldCancelSync.get() ? "warning" : (total.failed ? "warning" : "success"),
-          title: shouldCancelSync.get() ? `Sync ${mode} cancelled` : `Sync ${mode} completed`,
-          detail: `${summary}. Changes/deletions: ${totalChanges}. Failed: ${total.failed}. Pending queue: ${pendingCount()}`,
+          intent: noPendingAniToMal ? "info" : (shouldCancelSync.get() ? "warning" : (total.failed ? "warning" : "success")),
+          title: noPendingAniToMal ? "No pending AniList changes" : (shouldCancelSync.get() ? `Sync ${mode} cancelled` : `Sync ${mode} completed`),
+          detail: noPendingAniToMal
+            ? "ANI_TO_MAL now only pushes queued Seanime events. Use BIDIRECTIONAL for a full reconciliation."
+            : `${summary}. Changes/deletions: ${totalChanges}. Failed: ${total.failed}. Pending queue: ${pendingCount()}`,
         });
-        addLog(`Sync ${mode} completed | ${summary}`, total.failed ? "warn" : "success");
-        ctx.toast.success(`Sync completed (${totalChanges} changes/deletions, ${total.failed} failed)`);
+        if (noPendingAniToMal) addLog("ANI_TO_MAL skipped: no pending queued changes", "info");
+        else addLog(`Sync ${mode} completed | ${summary}`, total.failed ? "warn" : "success");
+        if (noPendingAniToMal) ctx.toast.info("No pending AniList changes to push");
+        else ctx.toast.success(`Sync completed (${totalChanges} changes/deletions, ${total.failed} failed)`);
       } catch (err) {
         const raw = toErrorMessage(err);
         const explained = explainSyncError(raw);
@@ -1727,6 +1750,8 @@ function init() {
       }, intervalMs);
       addLog(`MAL polling active every ${minutes} min`, "info");
     }
+
+    migrateSettingsIfNeeded();
 
     ctx.registerEventHandler("save-config", () => {
       $storage.set(STORAGE.CLIENT_ID, clientIdRef.current || "");
@@ -1954,9 +1979,9 @@ function init() {
                   label: "Default mode",
                   fieldRef: modeRef,
                   options: [
-                    { label: "BIDIRECTIONAL", value: "BIDIRECTIONAL" },
-                    { label: "ANI_TO_MAL", value: "ANI_TO_MAL" },
-                    { label: "MAL_TO_ANI", value: "MAL_TO_ANI" },
+                    { label: "BIDIRECTIONAL (full reconcile)", value: "BIDIRECTIONAL" },
+                    { label: "ANI_TO_MAL (pending queue)", value: "ANI_TO_MAL" },
+                    { label: "MAL_TO_ANI (full import)", value: "MAL_TO_ANI" },
                   ],
                 }),
                 tray.switch({ fieldRef: liveSyncRef, label: "Live sync AniList -> MAL via hooks" }),

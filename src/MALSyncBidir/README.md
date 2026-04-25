@@ -8,3 +8,5 @@ Bidirectional **AniList ↔ MAL** synchronization for:
 - Bidirectional conflict handling ✅
 - Safe deletion history ✅
 - Progress, cancel, and debug logs ✅
+
+Note: `ANI_TO_MAL` pushes queued Seanime events only. Use `BIDIRECTIONAL` for a full reconciliation.
