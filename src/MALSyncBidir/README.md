@@ -1,7 +1,6 @@
 # MALSync Bidir
 
-Sincronización bidireccional **AniList ↔ MAL** para:
+Bidirectional **AniList ↔ MAL** synchronization for:
 
 - Anime ✅
-- Manga ✅ (sin `num_volumes_read`)
-
+- Manga ✅ (`num_volumes_read` intentionally ignored)

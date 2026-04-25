@@ -425,8 +425,8 @@ function init() {
       detail: string;
     }>({
       intent: "info",
-      title: "Esperando acción",
-      detail: "Elegí un modo de sincronización para empezar.",
+      title: "Ready",
+      detail: "Choose a sync mode to start.",
     });
     const settingsFeedback = ctx.state("");
     const authFeedback = ctx.state("");
@@ -457,17 +457,17 @@ function init() {
     }
 
     function toErrorMessage(err: unknown) {
-      if (!err) return "Error desconocido";
+      if (!err) return "Unknown error";
       if (typeof err === "string") return err;
       return (err as any)?.message || String(err);
     }
 
     function explainSyncError(rawMessage: string) {
       if (/context deadline exceeded/i.test(rawMessage)) {
-        return "Timeout contra MAL (posible rate limit o latencia). Reintentá en 1-2 minutos.";
+        return "MAL request timed out (possible rate limit or latency). Try again in 1-2 minutes.";
       }
       if (/error\.json/i.test(rawMessage)) {
-        return "MAL respondió con endpoint de error. Suele pasar por timeout/rate limit o payload inválido.";
+        return "MAL returned an error endpoint. This usually means timeout, rate limit, or an invalid payload.";
       }
       return rawMessage;
     }
@@ -475,7 +475,7 @@ function init() {
     function assertValidMalId(kind: MediaKind, malIdRaw: any, phase: string): number {
       const malId = Number(malIdRaw);
       if (!Number.isInteger(malId) || malId <= 0) {
-        throw new Error(`[${phase}] MAL ID inválido para ${kind}: ${String(malIdRaw)}`);
+        throw new Error(`[${phase}] Invalid MAL ID for ${kind}: ${String(malIdRaw)}`);
       }
       return malId;
     }
@@ -594,14 +594,14 @@ function init() {
         const clientId = $storage.get(STORAGE.CLIENT_ID) || "";
         const clientSecret = $storage.get(STORAGE.CLIENT_SECRET) || "";
         const verifier = $storage.get(STORAGE.PKCE_VERIFIER) || "";
-        if (!clientId || !verifier) throw new Error("Falta client_id o code_verifier");
+        if (!clientId || !verifier) throw new Error("Missing client_id or code_verifier");
 
         let code = authCodeOrUrl.trim();
         if (code.includes("code=")) {
           const match = code.match(/[?&]code=([^&]+)/);
           if (match?.[1]) code = decodeURIComponent(match[1]);
         }
-        if (!code) throw new Error("No se encontró el auth code");
+        if (!code) throw new Error("Auth code not found");
 
         const body = encodeForm({
           grant_type: "authorization_code",
@@ -620,7 +620,7 @@ function init() {
           body,
         }, "Token exchange");
 
-        if (!res.ok) throw new Error(`Token exchange falló (${res.status})`);
+        if (!res.ok) throw new Error(`Token exchange failed (${res.status})`);
         const data = await res.json();
         saveTokens({
           accessToken: data.access_token,
@@ -631,13 +631,13 @@ function init() {
 
       async refreshIfNeeded() {
         const current = getStoredTokens();
-        if (!current.accessToken || !current.refreshToken) throw new Error("No hay tokens MAL guardados");
+        if (!current.accessToken || !current.refreshToken) throw new Error("No saved MAL tokens");
         const expiresAt = current.expiresAt || 0;
         if (Date.now() < (expiresAt - 30_000)) return current.accessToken;
 
         const clientId = $storage.get(STORAGE.CLIENT_ID) || "";
         const clientSecret = $storage.get(STORAGE.CLIENT_SECRET) || "";
-        if (!clientId) throw new Error("Falta client_id");
+        if (!clientId) throw new Error("Missing client_id");
 
         const body = encodeForm({
           grant_type: "refresh_token",
@@ -654,7 +654,7 @@ function init() {
           body,
         }, "Token refresh");
 
-        if (!res.ok) throw new Error(`Refresh token falló (${res.status})`);
+        if (!res.ok) throw new Error(`Refresh token failed (${res.status})`);
         const data = await res.json();
         saveTokens({
           accessToken: data.access_token,
@@ -681,7 +681,7 @@ function init() {
         while (nextUrl && guard < 10_000) {
           guard += 1;
           const res = await fetchWithRetry(nextUrl, { headers: await tokenManager.withAuthHeaders() }, "MAL fetch list");
-          if (!res.ok) throw new Error(`MAL list fetch falló (${res.status})`);
+          if (!res.ok) throw new Error(`MAL list fetch failed (${res.status})`);
 
           const page = await res.json() as MalListPage;
           const data = page?.data || [];
@@ -710,7 +710,7 @@ function init() {
         );
         if (!res.ok) {
           if (res.status === 404) return undefined;
-          throw new Error(`No pude leer estado anime MAL (${res.status})`);
+          throw new Error(`Could not read MAL anime status (${res.status})`);
         }
         const data = await res.json();
         return toMalCoreFromAnimePayload(malId, data?.my_list_status);
@@ -725,7 +725,7 @@ function init() {
         );
         if (!res.ok) {
           if (res.status === 404) return undefined;
-          throw new Error(`No pude leer estado manga MAL (${res.status})`);
+          throw new Error(`Could not read MAL manga status (${res.status})`);
         }
         const data = await res.json();
         return toMalCoreFromMangaPayload(malId, data?.my_list_status);
@@ -751,7 +751,7 @@ function init() {
           },
           body,
         }, `MAL upsert anime ${malId}`);
-        if (!res.ok) throw new Error(`No pude upsert anime MAL (${res.status})`);
+        if (!res.ok) throw new Error(`Could not upsert MAL anime (${res.status})`);
       },
 
       async upsertManga(target: MalCoreEntry) {
@@ -774,7 +774,7 @@ function init() {
           },
           body,
         }, `MAL upsert manga ${malId}`);
-        if (!res.ok) throw new Error(`No pude upsert manga MAL (${res.status})`);
+        if (!res.ok) throw new Error(`Could not upsert MAL manga (${res.status})`);
       },
 
       async remove(kind: MediaKind, malId: number) {
@@ -784,7 +784,7 @@ function init() {
           method: "DELETE",
           headers: await tokenManager.withAuthHeaders(),
         }, `MAL delete ${kind} ${malId}`);
-        if (!res.ok && res.status !== 404) throw new Error(`No pude borrar entrada MAL (${res.status})`);
+        if (!res.ok && res.status !== 404) throw new Error(`Could not delete MAL entry (${res.status})`);
       },
     };
 
@@ -1065,7 +1065,7 @@ function init() {
         }
       }
 
-      addLog(`Batch ANI->MAL ${kind}: ${changed} cambios`, "success");
+      addLog(`Batch ANI->MAL ${kind}: ${changed} changes`, "success");
       return changed;
     }
 
@@ -1126,26 +1126,26 @@ function init() {
       }
 
       aniListAdapter.refresh(kind);
-      addLog(`Batch MAL->ANI ${kind}: ${changed} cambios`, "success");
+      addLog(`Batch MAL->ANI ${kind}: ${changed} changes`, "success");
       return changed;
     }
 
     async function runSync(mode: SyncMode) {
       if (isSyncing.get()) {
-        ctx.toast.info("Ya hay un sync en curso");
+        ctx.toast.info("A sync is already running");
         return;
       }
       isSyncing.set(true);
       activeSyncMode.set(mode);
 
       try {
-        statusText.set(`Sync ${mode} en progreso...`);
+        statusText.set(`Sync ${mode} in progress...`);
         lastSyncSummary.set({
           intent: "info",
-          title: "Sincronizando…",
-          detail: `Ejecutando ${mode}. Esto puede tardar unos segundos.`,
+          title: "Syncing…",
+          detail: `Running ${mode}. This may take a few seconds.`,
         });
-        ctx.toast.info(`Iniciando sync ${mode}`);
+        ctx.toast.info(`Starting sync ${mode}`);
         await tokenManager.refreshIfNeeded();
 
         let aniToMalAnime = 0;
@@ -1168,21 +1168,21 @@ function init() {
         lastRun.set(new Date().toISOString());
         lastSyncSummary.set({
           intent: "success",
-          title: `Sync ${mode} completado`,
-          detail: `${summary}. Total cambios: ${totalChanges}`,
+          title: `Sync ${mode} completed`,
+          detail: `${summary}. Total changes: ${totalChanges}`,
         });
-        addLog(`Sync ${mode} finalizado | ${summary}`, "success");
-        ctx.toast.success(`Sync completado (${totalChanges} cambios)`);
+        addLog(`Sync ${mode} completed | ${summary}`, "success");
+        ctx.toast.success(`Sync completed (${totalChanges} changes)`);
       } catch (err) {
         const raw = toErrorMessage(err);
         const explained = explainSyncError(raw);
         lastSyncSummary.set({
           intent: "alert",
-          title: `Sync ${mode} falló`,
+          title: `Sync ${mode} failed`,
           detail: explained,
         });
         addLog(`Sync error: ${explained}`, "error");
-        ctx.toast.error(`Sync falló: ${explained}`);
+        ctx.toast.error(`Sync failed: ${explained}`);
       } finally {
         isSyncing.set(false);
         activeSyncMode.set(null);
@@ -1227,7 +1227,7 @@ function init() {
       }
 
       if (!settings.pollMalEnabled) {
-        addLog("Polling MAL desactivado", "info");
+        addLog("MAL polling disabled", "info");
         return;
       }
 
@@ -1237,32 +1237,32 @@ function init() {
         if (isSyncing.get()) return;
         void runSync("MAL_TO_ANI");
       }, intervalMs);
-      addLog(`Polling MAL activo cada ${minutes} min`, "info");
+      addLog(`MAL polling active every ${minutes} min`, "info");
     }
 
     ctx.registerEventHandler("save-config", () => {
       $storage.set(STORAGE.CLIENT_ID, clientIdRef.current || "");
       $storage.set(STORAGE.CLIENT_SECRET, clientSecretRef.current || "");
-      settingsFeedback.set("Configuración guardada ✅");
-      addLog("Config MAL guardada", "success");
+      settingsFeedback.set("Configuration saved ✅");
+      addLog("MAL config saved", "success");
     });
 
     ctx.registerEventHandler("generate-verifier", () => {
       const verifier = generateCodeVerifier();
       $storage.set(STORAGE.PKCE_VERIFIER, verifier);
-      settingsFeedback.set("Code verifier generado ✅");
-      addLog("PKCE verifier generado", "success");
+      settingsFeedback.set("Code verifier generated ✅");
+      addLog("PKCE verifier generated", "success");
     });
 
     ctx.registerEventHandler("exchange-code", () => {
       void (async () => {
         try {
           await tokenManager.exchangeCode(authCodeRef.current || "");
-          authFeedback.set("Conectado a MAL ✅");
-          addLog("Autenticación MAL exitosa", "success");
+          authFeedback.set("Connected to MAL ✅");
+          addLog("MAL authentication succeeded", "success");
         } catch (err) {
           authFeedback.set(`Error: ${(err as Error).message}`);
-          addLog(`Auth MAL falló: ${(err as Error).message}`, "error");
+          addLog(`MAL auth failed: ${(err as Error).message}`, "error");
         }
       })();
     });
@@ -1270,8 +1270,8 @@ function init() {
     ctx.registerEventHandler("save-preferences", () => {
       saveSettingsFromRefs();
       configurePolling();
-      settingsFeedback.set("Preferencias guardadas ✅");
-      addLog("Preferencias guardadas", "success");
+      settingsFeedback.set("Preferences saved ✅");
+      addLog("Preferences saved", "success");
     });
 
     ctx.registerEventHandler("sync-default", () => {
@@ -1288,7 +1288,7 @@ function init() {
 
     ctx.registerEventHandler("clear-logs", () => {
       logs.set([]);
-      statusText.set("Logs limpiados");
+      statusText.set("Logs cleared");
     });
 
     $store.watch<{ mediaId?: number }>(POST_UPDATE_SIGNAL_KEY, (payload) => {
@@ -1327,7 +1327,7 @@ function init() {
               tray.text("FullMALSync", { style: { fontWeight: "700", fontSize: "17px" } }),
               tray.text("AniList ↔ MyAnimeList · Anime + Manga", { className: "malsync-muted" }),
             ], { gap: 2 }),
-            tray.badge(syncing ? `Sync ${activeMode || ""}` : (authOk ? "MAL conectado" : "MAL no conectado"), {
+            tray.badge(syncing ? `Sync ${activeMode || ""}` : (authOk ? "MAL connected" : "MAL disconnected"), {
               intent: syncing ? "info" : (authOk ? "success" : "warning"),
               size: "md",
             }),
@@ -1347,18 +1347,18 @@ function init() {
                   intent: summary.intent,
                 }),
                 tray.stack([
-                  tray.text(`Estado: ${statusText.get()}`, { className: "malsync-muted" }),
+                  tray.text(`Status: ${statusText.get()}`, { className: "malsync-muted" }),
                   tray.flex([
                     tray.badge(`Polling: ${pollEnabledRef.current ? `ON (${pollEvery}m)` : "OFF"}`, {
                       intent: pollEnabledRef.current ? "info" : "gray",
                       size: "sm",
                     }),
-                    tray.badge(`Última: ${lastRun.get()}`, { intent: "gray", size: "sm" }),
+                    tray.badge(`Last: ${lastRun.get()}`, { intent: "gray", size: "sm" }),
                   ], { gap: 8, style: { flexWrap: "wrap" } }),
                 ], { gap: 8 }),
                 tray.stack([
                   tray.button({
-                    label: "Sync modo por defecto",
+                    label: "Sync default mode",
                     onClick: "sync-default",
                     intent: "primary",
                     loading: syncing && modeRef.current === activeMode,
@@ -1382,7 +1382,7 @@ function init() {
                     style: { width: "100%" },
                   }),
                 ], { gap: 10 }),
-                tray.text("Tip: si ves 'context deadline exceeded', suele ser timeout/rate limit temporal de MAL.", {
+                tray.text("Tip: if you see 'context deadline exceeded', it is usually a temporary MAL timeout/rate limit.", {
                   className: "malsync-muted",
                 }),
               ], { gap: 14 }),
@@ -1394,34 +1394,34 @@ function init() {
                 tray.input({ fieldRef: clientIdRef, label: "Client ID", placeholder: "MAL Client ID" }),
                 tray.input({ fieldRef: clientSecretRef, label: "Client Secret", placeholder: "MAL Client Secret" }),
                 tray.stack([
-                  tray.button({ label: "Guardar config", onClick: "save-config", intent: "gray-subtle", style: { width: "100%" } }),
-                  tray.button({ label: "Generar PKCE verifier", onClick: "generate-verifier", intent: "gray-subtle", style: { width: "100%" } }),
+                  tray.button({ label: "Save config", onClick: "save-config", intent: "gray-subtle", style: { width: "100%" } }),
+                  tray.button({ label: "Generate PKCE verifier", onClick: "generate-verifier", intent: "gray-subtle", style: { width: "100%" } }),
                 ], { gap: 8 }),
                 authUrl ? tray.anchor({
                   href: authUrl,
-                  text: "Abrir autorización MAL",
+                  text: "Open MAL authorization",
                   target: "_blank",
                 }) : tray.alert({
-                  title: "Falta PKCE link",
-                  description: "Guardá Client ID y generá verifier para habilitar el link de autorización.",
+                  title: "Missing PKCE link",
+                  description: "Save your Client ID and generate a verifier to enable the authorization link.",
                   intent: "warning",
                 }),
-                tray.input({ fieldRef: authCodeRef, label: "Auth code o URL callback", placeholder: "Pegá el code o URL completa" }),
+                tray.input({ fieldRef: authCodeRef, label: "Auth code or callback URL", placeholder: "Paste the code or full callback URL" }),
                 tray.button({
-                  label: "Intercambiar code por token",
+                  label: "Exchange code for token",
                   onClick: "exchange-code",
                   intent: "primary",
                   style: { width: "100%" },
                 }),
                 authFeedback.get() ? tray.alert({
-                  title: "Estado de autenticación",
+                  title: "Authentication status",
                   description: authFeedback.get(),
                   intent: authFeedback.get().includes("✅") ? "success" : "info",
                 }) : null,
 
-                tray.text("Preferencias de sincronización", { className: "malsync-section-title" }),
+                tray.text("Sync preferences", { className: "malsync-section-title" }),
                 tray.select({
-                  label: "Modo por defecto",
+                  label: "Default mode",
                   fieldRef: modeRef,
                   options: [
                     { label: "BIDIRECTIONAL", value: "BIDIRECTIONAL" },
@@ -1429,13 +1429,13 @@ function init() {
                     { label: "MAL_TO_ANI", value: "MAL_TO_ANI" },
                   ],
                 }),
-                tray.switch({ fieldRef: liveSyncRef, label: "Live sync AniList -> MAL por hooks" }),
-                tray.checkbox({ fieldRef: includeAnimeRef, label: "Incluir Anime" }),
-                tray.checkbox({ fieldRef: includeMangaRef, label: "Incluir Manga" }),
-                tray.checkbox({ fieldRef: syncDeletionsRef, label: "Sincronizar borrados (cuidado)" }),
+                tray.switch({ fieldRef: liveSyncRef, label: "Live sync AniList -> MAL via hooks" }),
+                tray.checkbox({ fieldRef: includeAnimeRef, label: "Include Anime" }),
+                tray.checkbox({ fieldRef: includeMangaRef, label: "Include Manga" }),
+                tray.checkbox({ fieldRef: syncDeletionsRef, label: "Sync deletions (danger)" }),
                 tray.switch({ fieldRef: pollEnabledRef, label: "Polling MAL -> AniList" }),
-                tray.input({ fieldRef: pollEveryMinutesRef, label: "Polling cada X min (5-60)", placeholder: "15" }),
-                tray.button({ label: "Guardar preferencias", onClick: "save-preferences", intent: "gray-subtle", style: { width: "100%" } }),
+                tray.input({ fieldRef: pollEveryMinutesRef, label: "Poll every X min (5-60)", placeholder: "15" }),
+                tray.button({ label: "Save preferences", onClick: "save-preferences", intent: "gray-subtle", style: { width: "100%" } }),
                 settingsFeedback.get() ? tray.text(settingsFeedback.get(), { className: "malsync-muted" }) : null,
               ].filter(Boolean as any), { gap: 14 }),
             ].filter(Boolean as any), { value: "config", style: { marginTop: "10px" } }),
@@ -1443,12 +1443,12 @@ function init() {
             tray.tabsContent([
               tray.stack([
                 tray.flex([
-                  tray.text("Registros recientes", { className: "malsync-section-title" }),
-                  tray.button({ label: "Limpiar logs", onClick: "clear-logs", intent: "gray", size: "sm" }),
+                  tray.text("Recent logs", { className: "malsync-section-title" }),
+                  tray.button({ label: "Clear logs", onClick: "clear-logs", intent: "gray", size: "sm" }),
                 ], { gap: 8, style: { justifyContent: "space-between", alignItems: "center", flexWrap: "wrap" } }),
                 tray.div([
                   tray.stack(
-                    (currentLogs.length ? currentLogs : [{ at: nowHHMMSS(), type: "info", message: "Sin logs todavía." } as LogEntry])
+                    (currentLogs.length ? currentLogs : [{ at: nowHHMMSS(), type: "info", message: "No logs yet." } as LogEntry])
                       .slice(0, 40)
                       .map((log) => tray.text(`[${log.at}] ${log.type.toUpperCase()}: ${log.message}`, { className: "malsync-muted" })),
                     { gap: 6 },
@@ -1472,6 +1472,6 @@ function init() {
       ], { gap: 10, className: "malsync-shell" });
     });
 
-    addLog("Plugin cargado. Configurá OAuth y corré sync.", "info");
+    addLog("Plugin loaded. Configure OAuth and run sync.", "info");
   });
 }
