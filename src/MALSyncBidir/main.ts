@@ -121,10 +121,6 @@ interface AniPatch {
   completedAt?: $app.AL_FuzzyDateInput;
 }
 
-function normalizeSyncMode(value: unknown): SyncMode {
-  return value === "MAL_TO_ANI" ? "MAL_TO_ANI" : "ANI_TO_MAL";
-}
-
 interface MalAnimeListStatusPayload {
   status?: MalAnimeStatus;
   score?: number;
@@ -517,6 +513,10 @@ function init() {
       completedAt?: any;
     }) {
       return `${entry.status ?? "null"}|${entry.score ?? 0}|${entry.progress ?? 0}|${entry.repeat ?? 0}|${entry.startedAt ?? ""}|${entry.completedAt ?? ""}`;
+    }
+
+    function normalizeSyncMode(value: unknown): SyncMode {
+      return value === "MAL_TO_ANI" ? "MAL_TO_ANI" : "ANI_TO_MAL";
     }
 
     const logs = ctx.state<LogEntry[]>([]);
