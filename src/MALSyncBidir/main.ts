@@ -62,6 +62,32 @@ interface SyncShadowRecord {
   at: number;
 }
 
+interface ReferenceRecord {
+  kind: MediaKind;
+  aniId: number;
+  malId: number;
+  lastAniFingerprint?: string;
+  lastMalFingerprint?: string;
+  deletedOnAni?: boolean;
+  deletedOnMal?: boolean;
+  lastSeenAniAt?: number;
+  lastSeenMalAt?: number;
+  updatedAt: number;
+}
+
+interface ReferenceKindIndex {
+  byAniId: Record<string, ReferenceRecord>;
+  byMalId: Record<string, number>;
+}
+
+interface ReferenceIndex {
+  version: number;
+  ANIME: ReferenceKindIndex;
+  MANGA: ReferenceKindIndex;
+  builtAt?: number;
+  updatedAt?: number;
+}
+
 interface MalTokens {
   accessToken?: string;
   refreshToken?: string;
@@ -350,10 +376,11 @@ function init() {
       HISTORY_ANI_TO_MAL: "malsync_bidir.historyAniToMal",
       HISTORY_MAL_TO_ANI: "malsync_bidir.historyMalToAni",
       SYNC_SHADOW: "malsync_bidir.syncShadow",
+      REFERENCE_INDEX: "malsync_bidir.referenceIndex",
       SETTINGS_SCHEMA_VERSION: "malsync_bidir.settingsSchemaVersion",
     };
 
-    const SETTINGS_SCHEMA_VERSION = 2;
+    const SETTINGS_SCHEMA_VERSION = 3;
 
     const DEFAULT_SETTINGS: SyncSettings = {
       mode: "BIDIRECTIONAL",
@@ -539,11 +566,18 @@ function init() {
       const currentVersion = asNumber($storage.get(STORAGE.SETTINGS_SCHEMA_VERSION), 0);
       if (currentVersion >= SETTINGS_SCHEMA_VERSION) return;
 
-      const storedMode = $storage.get(STORAGE.MODE) as SyncMode | undefined;
-      if (!storedMode || storedMode === "ANI_TO_MAL") {
-        $storage.set(STORAGE.MODE, "BIDIRECTIONAL");
-        modeRef.setValue("BIDIRECTIONAL");
-        addLog("Migrated default mode to BIDIRECTIONAL. ANI_TO_MAL now only pushes queued changes.", "info");
+      if (currentVersion < 2) {
+        const storedMode = $storage.get(STORAGE.MODE) as SyncMode | undefined;
+        if (!storedMode || storedMode === "ANI_TO_MAL") {
+          $storage.set(STORAGE.MODE, "BIDIRECTIONAL");
+          modeRef.setValue("BIDIRECTIONAL");
+          addLog("Migrated default mode to BIDIRECTIONAL. ANI_TO_MAL now only pushes queued changes.", "info");
+        }
+      }
+
+      if (currentVersion < 3 && !$storage.get(STORAGE.REFERENCE_INDEX)) {
+        saveReferenceIndex(createEmptyReferenceIndex());
+        addLog("Initialized AniList ↔ MAL reference index", "info");
       }
 
       $storage.set(STORAGE.SETTINGS_SCHEMA_VERSION, SETTINGS_SCHEMA_VERSION);
@@ -692,34 +726,206 @@ function init() {
       $storage.set(STORAGE.PENDING_ANI_TO_MAL, queue);
     }
 
-    function queuePendingAniToMal(mediaId?: number) {
+    function createEmptyReferenceKindIndex(): ReferenceKindIndex {
+      return { byAniId: {}, byMalId: {} };
+    }
+
+    function createEmptyReferenceIndex(): ReferenceIndex {
+      return {
+        version: 1,
+        ANIME: createEmptyReferenceKindIndex(),
+        MANGA: createEmptyReferenceKindIndex(),
+        builtAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+    }
+
+    function normalizeReferenceIndex(raw: any): ReferenceIndex {
+      const index = (raw || {}) as Partial<ReferenceIndex>;
+      return {
+        version: asNumber(index.version, 1),
+        ANIME: {
+          byAniId: index.ANIME?.byAniId || {},
+          byMalId: index.ANIME?.byMalId || {},
+        },
+        MANGA: {
+          byAniId: index.MANGA?.byAniId || {},
+          byMalId: index.MANGA?.byMalId || {},
+        },
+        builtAt: asNumber(index.builtAt, Date.now()),
+        updatedAt: asNumber(index.updatedAt, Date.now()),
+      };
+    }
+
+    function loadReferenceIndex(): ReferenceIndex {
+      return normalizeReferenceIndex($storage.get(STORAGE.REFERENCE_INDEX));
+    }
+
+    function saveReferenceIndex(index: ReferenceIndex) {
+      index.updatedAt = Date.now();
+      $storage.set(STORAGE.REFERENCE_INDEX, index);
+    }
+
+    function getReferenceBucket(index: ReferenceIndex, kind: MediaKind): ReferenceKindIndex {
+      if (kind === "ANIME") {
+        if (!index.ANIME) index.ANIME = createEmptyReferenceKindIndex();
+        return index.ANIME;
+      }
+      if (!index.MANGA) index.MANGA = createEmptyReferenceKindIndex();
+      return index.MANGA;
+    }
+
+    function putReferenceRecord(index: ReferenceIndex, record: ReferenceRecord) {
+      const bucket = getReferenceBucket(index, record.kind);
+      const aniKey = String(record.aniId);
+      const malKey = String(record.malId);
+      const previous = bucket.byAniId[aniKey];
+      if (previous && previous.malId !== record.malId) {
+        delete bucket.byMalId[String(previous.malId)];
+      }
+
+      const previousAniForMal = bucket.byMalId[malKey];
+      if (previousAniForMal && previousAniForMal !== record.aniId) {
+        delete bucket.byAniId[String(previousAniForMal)];
+      }
+
+      bucket.byAniId[aniKey] = record;
+      bucket.byMalId[malKey] = record.aniId;
+    }
+
+    function removeReferenceRecord(index: ReferenceIndex, kind: MediaKind, aniId?: number, malId?: number) {
+      const bucket = getReferenceBucket(index, kind);
+      const resolvedAniId = aniId || (malId ? bucket.byMalId[String(malId)] : undefined);
+      const record = resolvedAniId ? bucket.byAniId[String(resolvedAniId)] : undefined;
+      if (record) {
+        delete bucket.byAniId[String(record.aniId)];
+        delete bucket.byMalId[String(record.malId)];
+        return;
+      }
+      if (malId) delete bucket.byMalId[String(malId)];
+    }
+
+    function getReferenceByAniId(index: ReferenceIndex, kind: MediaKind, aniId: number) {
+      return getReferenceBucket(index, kind).byAniId[String(aniId)];
+    }
+
+    function getReferenceByMalId(index: ReferenceIndex, kind: MediaKind, malId: number) {
+      const bucket = getReferenceBucket(index, kind);
+      const aniId = bucket.byMalId[String(malId)];
+      return aniId ? bucket.byAniId[String(aniId)] : undefined;
+    }
+
+    function upsertReferenceLite(kind: MediaKind, aniId: number, malId: number, patch?: Partial<ReferenceRecord>) {
+      if (!aniId || !malId) return;
+      const index = loadReferenceIndex();
+      const existing = getReferenceByAniId(index, kind, aniId) || getReferenceByMalId(index, kind, malId);
+      putReferenceRecord(index, {
+        kind,
+        aniId,
+        malId,
+        lastAniFingerprint: existing?.lastAniFingerprint,
+        lastMalFingerprint: existing?.lastMalFingerprint,
+        deletedOnAni: false,
+        deletedOnMal: false,
+        lastSeenAniAt: existing?.lastSeenAniAt,
+        lastSeenMalAt: existing?.lastSeenMalAt,
+        updatedAt: Date.now(),
+        ...patch,
+      });
+      saveReferenceIndex(index);
+    }
+
+    function markReferenceDeletedOnAni(kind: MediaKind, aniId: number, malId?: number) {
+      const index = loadReferenceIndex();
+      const existing = getReferenceByAniId(index, kind, aniId) || (malId ? getReferenceByMalId(index, kind, malId) : undefined);
+      if (!existing && !malId) return;
+
+      putReferenceRecord(index, {
+        kind,
+        aniId,
+        malId: existing?.malId || malId!,
+        lastAniFingerprint: existing?.lastAniFingerprint,
+        lastMalFingerprint: existing?.lastMalFingerprint,
+        deletedOnAni: true,
+        deletedOnMal: existing?.deletedOnMal,
+        lastSeenAniAt: existing?.lastSeenAniAt,
+        lastSeenMalAt: existing?.lastSeenMalAt,
+        updatedAt: Date.now(),
+      });
+      saveReferenceIndex(index);
+    }
+
+    function purgeReference(kind: MediaKind, aniId?: number, malId?: number) {
+      const index = loadReferenceIndex();
+      removeReferenceRecord(index, kind, aniId, malId);
+      saveReferenceIndex(index);
+    }
+
+    function referenceCount(kind?: MediaKind) {
+      const index = loadReferenceIndex();
+      if (kind) return Object.keys(getReferenceBucket(index, kind).byAniId).length;
+      return Object.keys(index.ANIME.byAniId).length + Object.keys(index.MANGA.byAniId).length;
+    }
+
+    function resolveReferenceForMedia(mediaId: number): { kind?: MediaKind; malId?: number; ref?: ReferenceRecord } {
+      const index = loadReferenceIndex();
+      const animeRef = getReferenceByAniId(index, "ANIME", mediaId);
+      if (animeRef) return { kind: "ANIME", malId: animeRef.malId, ref: animeRef };
+
+      const mangaRef = getReferenceByAniId(index, "MANGA", mediaId);
+      if (mangaRef) return { kind: "MANGA", malId: mangaRef.malId, ref: mangaRef };
+
+      return {};
+    }
+
+    function queuePendingAniToMal(mediaId?: number, event?: string) {
       if (!mediaId) return;
 
+      const settings = loadSettings();
       const queue = loadPendingQueue();
-      let kind: MediaKind | undefined;
-      let malId: number | undefined;
+      const resolved = resolveReferenceForMedia(mediaId);
+      let kind = resolved.kind;
+      let malId = resolved.malId;
 
-      try {
-        const anime = $anilist.getAnime(mediaId);
-        if (anime?.idMal) {
-          kind = "ANIME";
-          malId = Number(anime.idMal);
-        }
-      } catch (_) { /* noop */ }
-
-      if (!kind) {
+      if (!kind || !malId) {
         try {
-          const manga = $anilist.getManga(mediaId);
-          if (manga?.idMal) {
-            kind = "MANGA";
-            malId = Number(manga.idMal);
+          const anime = $anilist.getAnime(mediaId);
+          if (anime?.idMal) {
+            kind = "ANIME";
+            malId = Number(anime.idMal);
           }
         } catch (_) { /* noop */ }
+
+        if (!kind) {
+          try {
+            const manga = $anilist.getManga(mediaId);
+            if (manga?.idMal) {
+              kind = "MANGA";
+              malId = Number(manga.idMal);
+            }
+          } catch (_) { /* noop */ }
+        }
+      }
+
+      if (kind && malId) {
+        if (event === "delete") {
+          markReferenceDeletedOnAni(kind, mediaId, malId);
+          if (!settings.syncDeletions) {
+            purgeReference(kind, mediaId, malId);
+            addDebug("REFERENCE_PURGED_AFTER_ANI_DELETE", { mediaId, kind, malId, reason: "sync deletions disabled" });
+            return;
+          }
+        } else {
+          upsertReferenceLite(kind, mediaId, malId, {
+            deletedOnAni: false,
+            lastSeenAniAt: Date.now(),
+          });
+        }
       }
 
       queue[String(mediaId)] = { mediaId, at: Date.now(), kind, malId };
       savePendingQueue(queue);
-      addDebug("PENDING_ANI_TO_MAL_QUEUED", { mediaId, kind, malId, pending: Object.keys(queue).length });
+      addDebug("PENDING_ANI_TO_MAL_QUEUED", { mediaId, kind, malId, event, pending: Object.keys(queue).length });
     }
 
     function removePending(mediaId: number) {
@@ -1274,6 +1480,110 @@ function init() {
         (current.completedAt || "") !== (target.completedAt || "");
     }
 
+    function putReferenceFromAniCore(index: ReferenceIndex, aniCore: AniCoreEntry, malCore?: MalCoreEntry) {
+      const target = toMalCoreFromAniCore(aniCore);
+      const existing = getReferenceByAniId(index, aniCore.kind, aniCore.mediaId) || getReferenceByMalId(index, aniCore.kind, aniCore.malId);
+      putReferenceRecord(index, {
+        kind: aniCore.kind,
+        aniId: aniCore.mediaId,
+        malId: aniCore.malId,
+        lastAniFingerprint: coreFingerprint(target),
+        lastMalFingerprint: malCore ? coreFingerprint(malCore) : existing?.lastMalFingerprint,
+        deletedOnAni: false,
+        deletedOnMal: malCore ? false : existing?.deletedOnMal,
+        lastSeenAniAt: Date.now(),
+        lastSeenMalAt: malCore ? Date.now() : existing?.lastSeenMalAt,
+        updatedAt: Date.now(),
+      });
+    }
+
+    function putReferenceFromMalCore(index: ReferenceIndex, kind: MediaKind, aniId: number, malCore: MalCoreEntry, aniCore?: AniCoreEntry) {
+      const existing = getReferenceByAniId(index, kind, aniId) || getReferenceByMalId(index, kind, malCore.malId);
+      putReferenceRecord(index, {
+        kind,
+        aniId,
+        malId: malCore.malId,
+        lastAniFingerprint: aniCore ? coreFingerprint(toMalCoreFromAniCore(aniCore)) : existing?.lastAniFingerprint,
+        lastMalFingerprint: coreFingerprint(malCore),
+        deletedOnAni: aniCore ? false : existing?.deletedOnAni,
+        deletedOnMal: false,
+        lastSeenAniAt: aniCore ? Date.now() : existing?.lastSeenAniAt,
+        lastSeenMalAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    }
+
+    function confirmReferenceSynced(kind: MediaKind, aniCore: AniCoreEntry, confirmedMal?: MalCoreEntry) {
+      const index = loadReferenceIndex();
+      putReferenceFromAniCore(index, aniCore, confirmedMal || toMalCoreFromAniCore(aniCore));
+      saveReferenceIndex(index);
+    }
+
+    function confirmReferenceMalSynced(kind: MediaKind, aniId: number, malCore: MalCoreEntry) {
+      const index = loadReferenceIndex();
+      const fp = coreFingerprint(malCore);
+      putReferenceRecord(index, {
+        kind,
+        aniId,
+        malId: malCore.malId,
+        lastAniFingerprint: fp,
+        lastMalFingerprint: fp,
+        deletedOnAni: false,
+        deletedOnMal: false,
+        lastSeenAniAt: Date.now(),
+        lastSeenMalAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      saveReferenceIndex(index);
+    }
+
+    function reconcileReferenceIndex(kind: MediaKind, aniMap: Map<number, AniCoreEntry>, malMap: Map<number, MalCoreEntry>) {
+      const index = loadReferenceIndex();
+      const bucket = getReferenceBucket(index, kind);
+      const now = Date.now();
+      let linked = 0;
+      let tombstoned = 0;
+      let purged = 0;
+
+      for (const [malId, aniCore] of aniMap.entries()) {
+        putReferenceFromAniCore(index, aniCore, malMap.get(malId));
+        linked += 1;
+      }
+
+      for (const [malId, malCore] of malMap.entries()) {
+        const existing = getReferenceByMalId(index, kind, malId);
+        if (!existing) continue;
+        const aniCore = aniMap.get(malId);
+        putReferenceFromMalCore(index, kind, existing.aniId, malCore, aniCore);
+      }
+
+      for (const record of Object.values({ ...bucket.byAniId })) {
+        const hasAni = aniMap.has(record.malId);
+        const hasMal = malMap.has(record.malId);
+
+        if (!hasAni && !hasMal) {
+          removeReferenceRecord(index, kind, record.aniId, record.malId);
+          purged += 1;
+          continue;
+        }
+
+        if (!hasAni || !hasMal) {
+          putReferenceRecord(index, {
+            ...record,
+            deletedOnAni: !hasAni,
+            deletedOnMal: !hasMal,
+            lastSeenAniAt: hasAni ? now : record.lastSeenAniAt,
+            lastSeenMalAt: hasMal ? now : record.lastSeenMalAt,
+            updatedAt: now,
+          });
+          tombstoned += 1;
+        }
+      }
+
+      saveReferenceIndex(index);
+      addDebug("REFERENCE_INDEX_RECONCILED", { kind, linked, tombstoned, purged, total: referenceCount(kind) });
+    }
+
     async function readJsonBody(res: any) {
       try {
         return await res.json();
@@ -1389,6 +1699,7 @@ function init() {
         : await malClient.upsertManga(target);
       if (ok) {
         markRecent(kind, target.malId, coreFingerprint(target));
+        confirmReferenceSynced(kind, aniCore, target);
       }
       return ok;
     }
@@ -1407,6 +1718,7 @@ function init() {
       const ok = aniListAdapter.upsertEntry(mediaId, patch);
       if (ok) {
         markRecent(kind, malCore.malId, coreFingerprint(malCore));
+        confirmReferenceMalSynced(kind, mediaId, malCore);
       }
       return ok;
     }
@@ -1436,34 +1748,45 @@ function init() {
         if (!aniCore) {
           if (fallbackMalId && canSafeDelete(STORAGE.HISTORY_ANI_TO_MAL, kind, fallbackMalId, settings)) {
             const deleted = await malClient.remove(kind, fallbackMalId);
-            return deleted ? "deleted" : "failed";
+            if (deleted) {
+              purgeReference(kind, mediaId, fallbackMalId);
+              return "deleted";
+            }
+            return "failed";
           }
-          return "skipped";
+          if (fallbackMalId) markReferenceDeletedOnAni(kind, mediaId, fallbackMalId);
+          return settings.syncDeletions ? "failed" : "skipped";
         }
 
         if (!aniCore.exists) {
           if (canSafeDelete(STORAGE.HISTORY_ANI_TO_MAL, kind, aniCore.malId, settings)) {
             const deleted = await malClient.remove(kind, aniCore.malId);
             if (deleted) {
+              purgeReference(kind, aniCore.mediaId, aniCore.malId);
               addLog(`Deleted MAL ${kind} ${aniCore.malId} from pending AniList deletion`, "success");
               addDebug("PENDING_ANI_DELETE_TO_MAL", { kind, malId: aniCore.malId, mediaId });
               return "deleted";
             }
             return "failed";
           }
+          markReferenceDeletedOnAni(kind, aniCore.mediaId, aniCore.malId);
           addLog(`Skipped MAL delete for ${kind} ${aniCore.malId}: safe deletion history missing`, "warn");
-          return "skipped";
+          return settings.syncDeletions ? "failed" : "skipped";
         }
 
         const target = toMalCoreFromAniCore(aniCore);
         const fp = coreFingerprint(target);
-        if (isRecent(kind, target.malId, fp)) return "skipped";
+        if (isRecent(kind, target.malId, fp)) {
+          confirmReferenceSynced(kind, aniCore, target);
+          return "skipped";
+        }
 
         let current: MalCoreEntry | undefined;
         if (kind === "ANIME") current = await malClient.getAnimeStatus(target.malId);
         else current = await malClient.getMangaStatus(target.malId);
 
         if (!needsMalUpdate(current, target)) {
+          confirmReferenceSynced(kind, aniCore, current || target);
           addDebug("PENDING_ANI_TO_MAL_SKIPPED", { kind, malId: target.malId, reason: "already synced" });
           return "skipped";
         }
@@ -1525,6 +1848,7 @@ function init() {
         addLog(`MAL->ANI ${kind}: skipped because MAL list could not be fetched`, "warn");
         return makeResult({ failed: 1 });
       }
+      reconcileReferenceIndex(kind, aniMap, malMap);
 
       let processed = 0;
       for (const [malId, malCore] of malMap.entries()) {
@@ -1559,8 +1883,10 @@ function init() {
             addLog(`Skipped AniList delete for ${kind} ${malId}: safe deletion history missing`, "warn");
             continue;
           }
-          if (aniListAdapter.deleteEntry(aniCore.mediaId)) result.deleted += 1;
-          else result.failed += 1;
+          if (aniListAdapter.deleteEntry(aniCore.mediaId)) {
+            result.deleted += 1;
+            purgeReference(kind, aniCore.mediaId, malId);
+          } else result.failed += 1;
         }
       }
 
@@ -1582,6 +1908,7 @@ function init() {
         addLog(`BIDIRECTIONAL ${kind}: skipped because MAL list could not be fetched`, "warn");
         return makeResult({ failed: 1 });
       }
+      reconcileReferenceIndex(kind, aniMap, malMap);
 
       const shadow = loadShadow(kind);
       const ids = Array.from(new Set<number>([
@@ -1653,6 +1980,7 @@ function init() {
               if (ok) {
                 result.deleted += 1;
                 delete shadow[String(malId)];
+                purgeReference(kind, aniCore.mediaId, malId);
               } else result.failed += 1;
             } else {
               const ok = await pushAniToMal(kind, aniCore);
@@ -1671,6 +1999,7 @@ function init() {
               if (ok) {
                 result.deleted += 1;
                 delete shadow[String(malId)];
+                purgeReference(kind, undefined, malId);
               } else result.failed += 1;
             } else {
               const ok = pushMalToAni(kind, malCore);
@@ -1789,11 +2118,12 @@ function init() {
       return undefined;
     }
 
-    async function handlePostUpdate(mediaId?: number) {
+    async function handlePostUpdate(mediaId?: number, event?: string) {
       const settings = loadSettings();
       if (!settings.liveSync) return;
       if (isSyncing.get()) return;
       if (!mediaId) return;
+      if (event === "delete" && !settings.syncDeletions) return;
 
       try {
         await tokenManager.refreshIfNeeded();
@@ -1896,8 +2226,8 @@ function init() {
     });
 
     $store.watch<{ mediaId?: number; event?: string; at?: number }>(POST_UPDATE_SIGNAL_KEY, (payload) => {
-      queuePendingAniToMal(payload?.mediaId);
-      void handlePostUpdate(payload?.mediaId);
+      queuePendingAniToMal(payload?.mediaId, payload?.event);
+      void handlePostUpdate(payload?.mediaId, payload?.event);
     });
 
     configurePolling();
@@ -1920,6 +2250,7 @@ function init() {
       const progress = syncProgress.get();
       const progressPct = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
       const queued = pendingCount();
+      const refs = referenceCount();
       const pollEvery = clamp(5, 60, asNumber(pollEveryMinutesRef.current, DEFAULT_SETTINGS.pollEveryMinutes));
 
       return tray.stack([
@@ -1967,6 +2298,7 @@ function init() {
                     }),
                     tray.badge(`Last: ${lastRun.get()}`, { intent: "gray", size: "sm" }),
                     tray.badge(`Pending: ${queued}`, { intent: queued ? "warning" : "gray", size: "sm" }),
+                    tray.badge(`Refs: ${refs}`, { intent: refs ? "info" : "gray", size: "sm" }),
                   ], { gap: 2, style: { flexWrap: "wrap" } }),
                   syncing ? tray.stack([
                     tray.text(`${progress.label} · ${progress.current}/${progress.total || "?"} (${progressPct}%)`, { className: "malsync-muted" }),
