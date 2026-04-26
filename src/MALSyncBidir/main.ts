@@ -104,6 +104,7 @@ interface AniPatch {
 interface MalAnimeListStatusPayload {
   status?: MalAnimeStatus;
   score?: number;
+  num_episodes_watched?: number;
   num_watched_episodes?: number;
   is_rewatching?: boolean;
   num_times_rewatched?: number;
@@ -933,7 +934,7 @@ function init() {
       },
 
       async fetchAnimeList() {
-        const fields = "fields=list_status{status,score,num_watched_episodes,is_rewatching,num_times_rewatched,start_date,finish_date}";
+        const fields = "fields=list_status{status,score,num_episodes_watched,is_rewatching,num_times_rewatched,start_date,finish_date}";
         const url = `${MAL_API_BASE}/users/@me/animelist?${fields}&limit=1000`;
         return await malClient.fetchPaged<MalListItem<MalAnimeListStatusPayload>>(url);
       },
@@ -947,7 +948,7 @@ function init() {
       async getAnimeStatus(malId: number): Promise<MalCoreEntry | undefined> {
         malId = assertValidMalId("ANIME", malId, "getAnimeStatus");
         const res = await fetchWithRetry(
-          `${MAL_API_BASE}/anime/${malId}?fields=my_list_status{status,score,num_watched_episodes,is_rewatching,num_times_rewatched,start_date,finish_date}`,
+          `${MAL_API_BASE}/anime/${malId}?fields=my_list_status{status,score,num_episodes_watched,is_rewatching,num_times_rewatched,start_date,finish_date}`,
           { headers: await tokenManager.withAuthHeaders() },
           `MAL get anime ${malId}`,
         );
@@ -1003,7 +1004,19 @@ function init() {
             addDebug("MAL_UPSERT_ANIME_FAILED", { malId, status: res?.status, target });
             return false;
           }
-          addDebug("MAL_UPSERT_ANIME", { malId, target });
+          const responseBody = await readJsonBody(res);
+          const verification = await verifyMalWrite("ANIME", target, responseBody);
+          if (!verification.ok) {
+            addLog(`MAL anime ${malId} update not confirmed; kept pending`, "warn");
+            addDebug("MAL_UPSERT_ANIME_VERIFY_FAILED", {
+              malId,
+              target,
+              response: verification.response,
+              current: verification.current,
+            });
+            return false;
+          }
+          addDebug("MAL_UPSERT_ANIME", { malId, target, confirmed: verification.current, source: verification.source });
           return true;
         } catch (err) {
           addLog(`MAL upsert anime skipped: ${toErrorMessage(err)}`, "warn");
@@ -1037,7 +1050,19 @@ function init() {
             addDebug("MAL_UPSERT_MANGA_FAILED", { malId, status: res?.status, target });
             return false;
           }
-          addDebug("MAL_UPSERT_MANGA", { malId, target });
+          const responseBody = await readJsonBody(res);
+          const verification = await verifyMalWrite("MANGA", target, responseBody);
+          if (!verification.ok) {
+            addLog(`MAL manga ${malId} update not confirmed; kept pending`, "warn");
+            addDebug("MAL_UPSERT_MANGA_VERIFY_FAILED", {
+              malId,
+              target,
+              response: verification.response,
+              current: verification.current,
+            });
+            return false;
+          }
+          addDebug("MAL_UPSERT_MANGA", { malId, target, confirmed: verification.current, source: verification.source });
           return true;
         } catch (err) {
           addLog(`MAL upsert manga skipped: ${toErrorMessage(err)}`, "warn");
@@ -1189,12 +1214,13 @@ function init() {
     };
 
     function toMalCoreFromAnimePayload(malId: number, listStatus?: MalAnimeListStatusPayload): MalCoreEntry {
+      const progress = listStatus?.num_episodes_watched ?? listStatus?.num_watched_episodes;
       return {
         kind: "ANIME",
         malId,
         status: listStatus?.status,
         score: asNumber(listStatus?.score, 0),
-        progress: asNumber(listStatus?.num_watched_episodes, 0),
+        progress: asNumber(progress, 0),
         repeat: asNumber(listStatus?.num_times_rewatched, 0),
         startedAt: listStatus?.start_date,
         completedAt: listStatus?.finish_date,
@@ -1246,6 +1272,42 @@ function init() {
         current.repeat !== target.repeat ||
         (current.startedAt || "") !== (target.startedAt || "") ||
         (current.completedAt || "") !== (target.completedAt || "");
+    }
+
+    async function readJsonBody(res: any) {
+      try {
+        return await res.json();
+      } catch (_) {
+        return undefined;
+      }
+    }
+
+    function extractMalStatusPayload(data: any) {
+      return data?.my_list_status || data?.list_status || data;
+    }
+
+    async function verifyMalWrite(kind: MediaKind, target: MalCoreEntry, responseBody: any) {
+      const payload = extractMalStatusPayload(responseBody);
+      const response = payload
+        ? kind === "ANIME"
+          ? toMalCoreFromAnimePayload(target.malId, payload as MalAnimeListStatusPayload)
+          : toMalCoreFromMangaPayload(target.malId, payload as MalMangaListStatusPayload)
+        : undefined;
+
+      if (response && !needsMalUpdate(response, target)) {
+        return { ok: true, source: "response", response, current: response };
+      }
+
+      await wait(500);
+      const current = kind === "ANIME"
+        ? await malClient.getAnimeStatus(target.malId)
+        : await malClient.getMangaStatus(target.malId);
+
+      if (current && !needsMalUpdate(current, target)) {
+        return { ok: true, source: "read-after-write", response, current };
+      }
+
+      return { ok: false, source: "read-after-write", response, current };
     }
 
     function needsAniUpdate(current: AniCoreEntry | undefined, target: AniPatch) {
