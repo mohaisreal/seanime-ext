@@ -3,7 +3,8 @@
 /// <reference path="./core.d.ts" />
 
 type MediaKind = "ANIME" | "MANGA";
-type SyncMode = "ANI_TO_MAL" | "MAL_TO_ANI" | "BIDIRECTIONAL";
+type SyncMode = "ANI_TO_MAL" | "MAL_TO_ANI";
+type LegacySyncMode = SyncMode | "BIDIRECTIONAL";
 type ConflictPolicy = "MOST_PROGRESS" | "ANILIST_WINS" | "MAL_WINS" | "SKIP";
 
 type MalAnimeStatus = "watching" | "completed" | "on_hold" | "dropped" | "plan_to_watch";
@@ -53,13 +54,6 @@ interface PendingAniChange {
   at: number;
   kind?: MediaKind;
   malId?: number;
-}
-
-interface SyncShadowRecord {
-  ani: string;
-  mal: string;
-  winner?: "ANI" | "MAL" | "NONE";
-  at: number;
 }
 
 interface ReferenceRecord {
@@ -125,6 +119,10 @@ interface AniPatch {
   repeat?: number;
   startedAt?: $app.AL_FuzzyDateInput;
   completedAt?: $app.AL_FuzzyDateInput;
+}
+
+function normalizeSyncMode(value: unknown): SyncMode {
+  return value === "MAL_TO_ANI" ? "MAL_TO_ANI" : "ANI_TO_MAL";
 }
 
 interface MalAnimeListStatusPayload {
@@ -380,10 +378,10 @@ function init() {
       SETTINGS_SCHEMA_VERSION: "malsync_bidir.settingsSchemaVersion",
     };
 
-    const SETTINGS_SCHEMA_VERSION = 3;
+    const SETTINGS_SCHEMA_VERSION = 4;
 
     const DEFAULT_SETTINGS: SyncSettings = {
-      mode: "BIDIRECTIONAL",
+      mode: "ANI_TO_MAL",
       liveSync: true,
       includeAnime: true,
       includeManga: true,
@@ -546,7 +544,7 @@ function init() {
     const clientIdRef = ctx.fieldRef<string>($storage.get(STORAGE.CLIENT_ID) || "");
     const clientSecretRef = ctx.fieldRef<string>($storage.get(STORAGE.CLIENT_SECRET) || "");
     const authCodeRef = ctx.fieldRef<string>("");
-    const modeRef = ctx.fieldRef<SyncMode>(($storage.get(STORAGE.MODE) as SyncMode) || DEFAULT_SETTINGS.mode);
+    const modeRef = ctx.fieldRef<SyncMode>(normalizeSyncMode($storage.get(STORAGE.MODE) || DEFAULT_SETTINGS.mode));
     const liveSyncRef = ctx.fieldRef<boolean>($storage.get(STORAGE.LIVE_SYNC) ?? DEFAULT_SETTINGS.liveSync);
     const includeAnimeRef = ctx.fieldRef<boolean>($storage.get(STORAGE.INCLUDE_ANIME) ?? DEFAULT_SETTINGS.includeAnime);
     const includeMangaRef = ctx.fieldRef<boolean>($storage.get(STORAGE.INCLUDE_MANGA) ?? DEFAULT_SETTINGS.includeManga);
@@ -567,17 +565,25 @@ function init() {
       if (currentVersion >= SETTINGS_SCHEMA_VERSION) return;
 
       if (currentVersion < 2) {
-        const storedMode = $storage.get(STORAGE.MODE) as SyncMode | undefined;
-        if (!storedMode || storedMode === "ANI_TO_MAL") {
-          $storage.set(STORAGE.MODE, "BIDIRECTIONAL");
-          modeRef.setValue("BIDIRECTIONAL");
-          addLog("Migrated default mode to BIDIRECTIONAL. ANI_TO_MAL now only pushes queued changes.", "info");
+        const storedMode = $storage.get(STORAGE.MODE) as LegacySyncMode | undefined;
+        if (!storedMode) {
+          $storage.set(STORAGE.MODE, "ANI_TO_MAL");
+          modeRef.setValue("ANI_TO_MAL");
         }
       }
 
       if (currentVersion < 3 && !$storage.get(STORAGE.REFERENCE_INDEX)) {
         saveReferenceIndex(createEmptyReferenceIndex());
         addLog("Initialized AniList ↔ MAL reference index", "info");
+      }
+
+      if (currentVersion < 4) {
+        const storedMode = $storage.get(STORAGE.MODE) as LegacySyncMode | undefined;
+        if (!storedMode || storedMode === "BIDIRECTIONAL") {
+          $storage.set(STORAGE.MODE, "ANI_TO_MAL");
+          modeRef.setValue("ANI_TO_MAL");
+          addLog("Migrated default mode to ANI_TO_MAL. Bidirectional mode has been removed.", "info");
+        }
       }
 
       $storage.set(STORAGE.SETTINGS_SCHEMA_VERSION, SETTINGS_SCHEMA_VERSION);
@@ -692,7 +698,7 @@ function init() {
 
     function loadSettings(): SyncSettings {
       return {
-        mode: (($storage.get(STORAGE.MODE) as SyncMode) || DEFAULT_SETTINGS.mode),
+        mode: normalizeSyncMode($storage.get(STORAGE.MODE) || DEFAULT_SETTINGS.mode),
         liveSync: $storage.get(STORAGE.LIVE_SYNC) ?? DEFAULT_SETTINGS.liveSync,
         includeAnime: $storage.get(STORAGE.INCLUDE_ANIME) ?? DEFAULT_SETTINGS.includeAnime,
         includeManga: $storage.get(STORAGE.INCLUDE_MANGA) ?? DEFAULT_SETTINGS.includeManga,
@@ -706,7 +712,7 @@ function init() {
 
     function saveSettingsFromRefs() {
       const pollEvery = clamp(5, 60, asNumber(pollEveryMinutesRef.current, DEFAULT_SETTINGS.pollEveryMinutes));
-      $storage.set(STORAGE.MODE, modeRef.current);
+      $storage.set(STORAGE.MODE, normalizeSyncMode(modeRef.current));
       $storage.set(STORAGE.LIVE_SYNC, !!liveSyncRef.current);
       $storage.set(STORAGE.INCLUDE_ANIME, !!includeAnimeRef.current);
       $storage.set(STORAGE.INCLUDE_MANGA, !!includeMangaRef.current);
@@ -950,17 +956,6 @@ function init() {
       const history = loadHistory(storageKey);
       history[kind] = Array.from(ids.values()).filter(Boolean);
       $storage.set(storageKey, history);
-    }
-
-    function loadShadow(kind: MediaKind): Record<string, SyncShadowRecord> {
-      const all = ($storage.get(STORAGE.SYNC_SHADOW) || {}) as Record<string, Record<string, SyncShadowRecord>>;
-      return all[kind] || {};
-    }
-
-    function saveShadow(kind: MediaKind, shadow: Record<string, SyncShadowRecord>) {
-      const all = ($storage.get(STORAGE.SYNC_SHADOW) || {}) as Record<string, Record<string, SyncShadowRecord>>;
-      all[kind] = shadow;
-      $storage.set(STORAGE.SYNC_SHADOW, all);
     }
 
     function canSafeDelete(storageKey: string, kind: MediaKind, malId: number, settings: SyncSettings) {
@@ -1350,7 +1345,7 @@ function init() {
         return byMalId;
       },
 
-      resolveAniMediaIdByMalId(kind: MediaKind, malId: number): number | undefined {
+      async resolveAniMediaIdByMalId(kind: MediaKind, malId: number): Promise<number | undefined> {
         try {
           const token = $database.anilist.getToken();
           const body = {
@@ -1368,6 +1363,7 @@ function init() {
           };
 
           const data = $anilist.customQuery<any>(body, token);
+          await wait(700);
           const id = data?.data?.Media?.id ?? data?.Media?.id;
           if (!id) return undefined;
           return Number(id);
@@ -1378,7 +1374,7 @@ function init() {
         }
       },
 
-      upsertEntry(mediaId: number, patch: AniPatch) {
+      async upsertEntry(mediaId: number, patch: AniPatch) {
         try {
           $anilist.updateEntry(
             mediaId,
@@ -1391,7 +1387,9 @@ function init() {
 
           if ((patch.repeat ?? 0) > 0) {
             $anilist.updateEntryRepeat(mediaId, patch.repeat!);
+            await wait(700);
           }
+          await wait(700);
           addDebug("ANILIST_UPSERT", { mediaId, patch });
           return true;
         } catch (err) {
@@ -1401,9 +1399,10 @@ function init() {
         }
       },
 
-      deleteEntry(mediaId: number) {
+      async deleteEntry(mediaId: number) {
         try {
           $anilist.deleteEntry(mediaId);
+          await wait(700);
           addDebug("ANILIST_DELETE", { mediaId });
           return true;
         } catch (err) {
@@ -1413,9 +1412,10 @@ function init() {
         }
       },
 
-      refresh(kind: MediaKind) {
+      async refresh(kind: MediaKind) {
         if (kind === "ANIME") $anilist.refreshAnimeCollection();
         else $anilist.refreshMangaCollection();
+        await wait(700);
       },
     };
 
@@ -1704,10 +1704,14 @@ function init() {
       return ok;
     }
 
-    function pushMalToAni(kind: MediaKind, malCore: MalCoreEntry, currentAni?: AniCoreEntry) {
+    async function pushMalToAni(kind: MediaKind, malCore: MalCoreEntry, currentAni?: AniCoreEntry) {
       let mediaId = currentAni?.mediaId;
       if (!mediaId) {
-        mediaId = aniListAdapter.resolveAniMediaIdByMalId(kind, malCore.malId);
+        const ref = getReferenceByMalId(loadReferenceIndex(), kind, malCore.malId);
+        mediaId = ref?.aniId;
+      }
+      if (!mediaId) {
+        mediaId = await aniListAdapter.resolveAniMediaIdByMalId(kind, malCore.malId);
       }
       if (!mediaId) {
         addLog(`Skipped ${kind} MAL ${malCore.malId}: no AniList match`, "warn");
@@ -1715,27 +1719,12 @@ function init() {
         return false;
       }
       const patch = toAniPatchFromMalCore(malCore);
-      const ok = aniListAdapter.upsertEntry(mediaId, patch);
+      const ok = await aniListAdapter.upsertEntry(mediaId, patch);
       if (ok) {
         markRecent(kind, malCore.malId, coreFingerprint(malCore));
         confirmReferenceMalSynced(kind, mediaId, malCore);
       }
       return ok;
-    }
-
-    function resolveConflictWinner(settings: SyncSettings, aniTarget: MalCoreEntry, malCore: MalCoreEntry): "ANI" | "MAL" | "SKIP" {
-      if (settings.conflictPolicy === "ANILIST_WINS") return "ANI";
-      if (settings.conflictPolicy === "MAL_WINS") return "MAL";
-      if (settings.conflictPolicy === "SKIP") return "SKIP";
-
-      if (aniTarget.progress !== malCore.progress) return aniTarget.progress > malCore.progress ? "ANI" : "MAL";
-      if (aniTarget.repeat !== malCore.repeat) return aniTarget.repeat > malCore.repeat ? "ANI" : "MAL";
-
-      const aniCompleted = aniTarget.status === "completed";
-      const malCompleted = malCore.status === "completed";
-      if (aniCompleted !== malCompleted) return aniCompleted ? "ANI" : "MAL";
-
-      return "ANI";
     }
 
     async function syncSingleAniToMal(kind: MediaKind, mediaId: number, fallbackMalId?: number): Promise<"changed" | "skipped" | "failed" | "deleted"> {
@@ -1809,30 +1798,73 @@ function init() {
       if (kind === "ANIME" && !settings.includeAnime) return makeResult();
       if (kind === "MANGA" && !settings.includeManga) return makeResult();
 
-      const queue = loadPendingQueue();
-      const pending = Object.values(queue).filter((item) => (item.kind || inferKindByMediaId(item.mediaId)) === kind);
+      const aniMap = aniListAdapter.getCollectionMap(kind);
+      const malMap = await buildMalMap(kind);
       const result = makeResult();
-      if (!pending.length) {
-        addLog(`Pending ANI->MAL ${kind}: no queued changes`, "info");
-        return result;
+      if (!malMap) {
+        addLog(`ANI->MAL ${kind}: skipped because MAL list could not be fetched`, "warn");
+        return makeResult({ failed: 1 });
       }
+      reconcileReferenceIndex(kind, aniMap, malMap);
 
       let processed = 0;
-      for (const item of pending) {
+      const total = aniMap.size;
+      for (const [malId, aniCore] of aniMap.entries()) {
         if (shouldCancelSync.get()) break;
         processed += 1;
-        setProgress(processed, pending.length, `Pending ANI->MAL ${kind} ${item.mediaId}`);
+        setProgress(processed, total, `ANI->MAL ${kind} ${malId}`);
 
-        const outcome = await syncSingleAniToMal(kind, item.mediaId, item.malId);
-        if (outcome === "changed") result.changed += 1;
-        else if (outcome === "deleted") result.deleted += 1;
-        else if (outcome === "failed") result.failed += 1;
-        else result.skipped += 1;
+        try {
+          const target = toMalCoreFromAniCore(aniCore);
+          const current = malMap.get(malId);
 
-        if (outcome !== "failed") removePending(item.mediaId);
+          if (!needsMalUpdate(current, target)) {
+            confirmReferenceSynced(kind, aniCore, current || target);
+            removePending(aniCore.mediaId);
+            result.skipped += 1;
+            continue;
+          }
+
+          const ok = await pushAniToMal(kind, aniCore);
+          if (ok) {
+            result.changed += 1;
+            removePending(aniCore.mediaId);
+            addDebug("ANI_TO_MAL_FULL", { kind, mediaId: aniCore.mediaId, malId, target, current });
+            await wait(500);
+          } else {
+            result.failed += 1;
+          }
+        } catch (err) {
+          result.failed += 1;
+          addLog(`ANI->MAL ${kind} ${malId} skipped: ${toErrorMessage(err)}`, "warn");
+          addDebug("ANI_TO_MAL_FULL_ENTRY_ERROR", { kind, malId, error: toErrorMessage(err) });
+        }
       }
 
-      addLog(`Pending ANI->MAL ${kind}: C:${result.changed} D:${result.deleted} F:${result.failed} S:${result.skipped}`, result.failed ? "warn" : "success");
+      if (settings.syncDeletions) {
+        for (const [malId] of malMap.entries()) {
+          if (shouldCancelSync.get()) break;
+          if (aniMap.has(malId)) continue;
+
+          if (!canSafeDelete(STORAGE.HISTORY_ANI_TO_MAL, kind, malId, settings)) {
+            result.skipped += 1;
+            addLog(`Skipped MAL delete for ${kind} ${malId}: safe deletion history missing`, "warn");
+            continue;
+          }
+
+          const ok = await malClient.remove(kind, malId);
+          if (ok) {
+            result.deleted += 1;
+            purgeReference(kind, undefined, malId);
+            await wait(500);
+          } else {
+            result.failed += 1;
+          }
+        }
+      }
+
+      saveHistorySet(STORAGE.HISTORY_ANI_TO_MAL, kind, new Set(aniMap.keys()));
+      addLog(`Batch ANI->MAL ${kind}: C:${result.changed} D:${result.deleted} F:${result.failed} S:${result.skipped}`, result.failed ? "warn" : "success");
       return result;
     }
 
@@ -1864,7 +1896,7 @@ function init() {
             continue;
           }
 
-          const ok = pushMalToAni(kind, malCore, currentAni);
+          const ok = await pushMalToAni(kind, malCore, currentAni);
           if (ok) result.changed += 1;
           else result.failed += 1;
         } catch (err) {
@@ -1883,7 +1915,7 @@ function init() {
             addLog(`Skipped AniList delete for ${kind} ${malId}: safe deletion history missing`, "warn");
             continue;
           }
-          if (aniListAdapter.deleteEntry(aniCore.mediaId)) {
+          if (await aniListAdapter.deleteEntry(aniCore.mediaId)) {
             result.deleted += 1;
             purgeReference(kind, aniCore.mediaId, malId);
           } else result.failed += 1;
@@ -1891,208 +1923,64 @@ function init() {
       }
 
       saveHistorySet(STORAGE.HISTORY_MAL_TO_ANI, kind, new Set(malMap.keys()));
-      aniListAdapter.refresh(kind);
+      if (result.changed || result.deleted) await aniListAdapter.refresh(kind);
       addLog(`Batch MAL->ANI ${kind}: C:${result.changed} D:${result.deleted} F:${result.failed} S:${result.skipped}`, result.failed ? "warn" : "success");
       return result;
     }
 
-    async function syncBidirectionalBatch(kind: MediaKind): Promise<SyncBatchResult> {
-      const settings = loadSettings();
-      if (kind === "ANIME" && !settings.includeAnime) return makeResult();
-      if (kind === "MANGA" && !settings.includeManga) return makeResult();
-
-      const aniMap = aniListAdapter.getCollectionMap(kind);
-      const malMap = await buildMalMap(kind);
-      const result = makeResult();
-      if (!malMap) {
-        addLog(`BIDIRECTIONAL ${kind}: skipped because MAL list could not be fetched`, "warn");
-        return makeResult({ failed: 1 });
-      }
-      reconcileReferenceIndex(kind, aniMap, malMap);
-
-      const shadow = loadShadow(kind);
-      const ids = Array.from(new Set<number>([
-        ...Array.from(aniMap.keys()),
-        ...Array.from(malMap.keys()),
-      ]));
-
-      let processed = 0;
-      for (const malId of ids) {
-        if (shouldCancelSync.get()) break;
-        processed += 1;
-        setProgress(processed, ids.length, `BIDIRECTIONAL ${kind} ${malId}`);
-
-        try {
-          const aniCore = aniMap.get(malId);
-          const malCore = malMap.get(malId);
-          const prev = shadow[String(malId)];
-
-          if (aniCore && malCore) {
-            const aniTarget = toMalCoreFromAniCore(aniCore);
-            const aniFp = coreFingerprint(aniTarget);
-            const malFp = coreFingerprint(malCore);
-
-            if (aniFp === malFp) {
-              shadow[String(malId)] = { ani: aniFp, mal: malFp, winner: "NONE", at: Date.now() };
-              result.skipped += 1;
-              continue;
-            }
-
-            const aniChanged = !prev || prev.ani !== aniFp;
-            const malChanged = !prev || prev.mal !== malFp;
-            let winner: "ANI" | "MAL" | "SKIP";
-
-            if (prev && aniChanged && !malChanged) winner = "ANI";
-            else if (prev && malChanged && !aniChanged) winner = "MAL";
-            else {
-              winner = resolveConflictWinner(settings, aniTarget, malCore);
-              result.conflicts += 1;
-              addLog(`Conflict ${kind} ${malId}: ${winner}`, winner === "SKIP" ? "warn" : "info");
-              addDebug("BIDIRECTIONAL_CONFLICT", { kind, malId, policy: settings.conflictPolicy, winner, aniTarget, malCore, prev });
-            }
-
-            if (winner === "SKIP") {
-              result.skipped += 1;
-              continue;
-            }
-
-            if (winner === "ANI") {
-              const ok = await pushAniToMal(kind, aniCore);
-              if (ok) {
-                result.changed += 1;
-                shadow[String(malId)] = { ani: aniFp, mal: aniFp, winner: "ANI", at: Date.now() };
-              } else result.failed += 1;
-            } else {
-              const ok = pushMalToAni(kind, malCore, aniCore);
-              if (ok) {
-                result.changed += 1;
-                shadow[String(malId)] = { ani: malFp, mal: malFp, winner: "MAL", at: Date.now() };
-              } else result.failed += 1;
-            }
-            continue;
-          }
-
-          if (aniCore && !malCore) {
-            const aniTarget = toMalCoreFromAniCore(aniCore);
-            const fp = coreFingerprint(aniTarget);
-            if (settings.syncDeletions && (prev || !settings.safeDeletions)) {
-              const ok = aniListAdapter.deleteEntry(aniCore.mediaId);
-              if (ok) {
-                result.deleted += 1;
-                delete shadow[String(malId)];
-                purgeReference(kind, aniCore.mediaId, malId);
-              } else result.failed += 1;
-            } else {
-              const ok = await pushAniToMal(kind, aniCore);
-              if (ok) {
-                result.changed += 1;
-                shadow[String(malId)] = { ani: fp, mal: fp, winner: "ANI", at: Date.now() };
-              } else result.failed += 1;
-            }
-            continue;
-          }
-
-          if (!aniCore && malCore) {
-            const fp = coreFingerprint(malCore);
-            if (settings.syncDeletions && (prev || !settings.safeDeletions)) {
-              const ok = await malClient.remove(kind, malId);
-              if (ok) {
-                result.deleted += 1;
-                delete shadow[String(malId)];
-                purgeReference(kind, undefined, malId);
-              } else result.failed += 1;
-            } else {
-              const ok = pushMalToAni(kind, malCore);
-              if (ok) {
-                result.changed += 1;
-                shadow[String(malId)] = { ani: fp, mal: fp, winner: "MAL", at: Date.now() };
-              } else result.failed += 1;
-            }
-          }
-        } catch (err) {
-          result.failed += 1;
-          addLog(`BIDIRECTIONAL ${kind} ${malId} skipped: ${toErrorMessage(err)}`, "warn");
-          addDebug("BIDIRECTIONAL_ENTRY_ERROR", { kind, malId, error: toErrorMessage(err) });
-        }
-      }
-
-      saveShadow(kind, shadow);
-      saveHistorySet(STORAGE.HISTORY_ANI_TO_MAL, kind, new Set(aniMap.keys()));
-      saveHistorySet(STORAGE.HISTORY_MAL_TO_ANI, kind, new Set(malMap.keys()));
-      aniListAdapter.refresh(kind);
-      addLog(`BIDIRECTIONAL ${kind}: C:${result.changed} D:${result.deleted} F:${result.failed} S:${result.skipped} Conf:${result.conflicts}`, result.failed ? "warn" : "success");
-      return result;
-    }
-
-    async function runSync(mode: SyncMode) {
+    async function runSync(mode: LegacySyncMode) {
+      const effectiveMode = normalizeSyncMode(mode);
       if (isSyncing.get()) {
         ctx.toast.info("A sync is already running");
         return;
       }
       isSyncing.set(true);
       shouldCancelSync.set(false);
-      activeSyncMode.set(mode);
-      resetProgress(`Starting ${mode}`);
-      const pendingAtStart = pendingCount();
+      activeSyncMode.set(effectiveMode);
+      resetProgress(`Starting ${effectiveMode}`);
 
       try {
-        statusText.set(`Sync ${mode} in progress...`);
+        statusText.set(`Sync ${effectiveMode} in progress...`);
         lastSyncSummary.set({
           intent: "info",
           title: "Syncing…",
-          detail: `Running ${mode}. This may take a few seconds.`,
+          detail: `Running ${effectiveMode}. This may take a few seconds.`,
         });
-        ctx.toast.info(`Starting sync ${mode}`);
+        ctx.toast.info(`Starting sync ${effectiveMode}`);
         await tokenManager.refreshIfNeeded();
 
         let aniToMalAnime = makeResult();
         let aniToMalManga = makeResult();
         let malToAniAnime = makeResult();
         let malToAniManga = makeResult();
-        let bidirAnime = makeResult();
-        let bidirManga = makeResult();
 
-        if (mode === "ANI_TO_MAL") {
+        if (effectiveMode === "ANI_TO_MAL") {
           aniToMalAnime = await syncAniToMalBatch("ANIME");
           aniToMalManga = await syncAniToMalBatch("MANGA");
         }
-        if (mode === "MAL_TO_ANI") {
+        if (effectiveMode === "MAL_TO_ANI") {
           malToAniAnime = await syncMalToAniBatch("ANIME");
           malToAniManga = await syncMalToAniBatch("MANGA");
         }
-        if (mode === "BIDIRECTIONAL") {
-          bidirAnime = await syncBidirectionalBatch("ANIME");
-          bidirManga = await syncBidirectionalBatch("MANGA");
-        }
 
-        const total = mergeResults(aniToMalAnime, aniToMalManga, malToAniAnime, malToAniManga, bidirAnime, bidirManga);
+        const total = mergeResults(aniToMalAnime, aniToMalManga, malToAniAnime, malToAniManga);
         const totalChanges = total.changed + total.deleted;
-        if (mode === "BIDIRECTIONAL" && total.failed === 0) {
-          savePendingQueue({});
-        }
-        const noPendingAniToMal = mode === "ANI_TO_MAL" && pendingAtStart === 0;
-        const summary = mode === "BIDIRECTIONAL"
-          ? `BIDIR A:${bidirAnime.changed}/${bidirAnime.deleted}/${bidirAnime.failed} M:${bidirManga.changed}/${bidirManga.deleted}/${bidirManga.failed} Conf:${bidirAnime.conflicts + bidirManga.conflicts}`
-          : `ANI→MAL A:${aniToMalAnime.changed}/${aniToMalAnime.deleted}/${aniToMalAnime.failed} M:${aniToMalManga.changed}/${aniToMalManga.deleted}/${aniToMalManga.failed} | MAL→ANI A:${malToAniAnime.changed}/${malToAniAnime.deleted}/${malToAniAnime.failed} M:${malToAniManga.changed}/${malToAniManga.deleted}/${malToAniManga.failed}`;
+        const summary = `ANI→MAL A:${aniToMalAnime.changed}/${aniToMalAnime.deleted}/${aniToMalAnime.failed} M:${aniToMalManga.changed}/${aniToMalManga.deleted}/${aniToMalManga.failed} | MAL→ANI A:${malToAniAnime.changed}/${malToAniAnime.deleted}/${malToAniAnime.failed} M:${malToAniManga.changed}/${malToAniManga.deleted}/${malToAniManga.failed}`;
 
         lastRun.set(new Date().toISOString());
         lastSyncSummary.set({
-          intent: noPendingAniToMal ? "info" : (shouldCancelSync.get() ? "warning" : (total.failed ? "warning" : "success")),
-          title: noPendingAniToMal ? "No pending AniList changes" : (shouldCancelSync.get() ? `Sync ${mode} cancelled` : `Sync ${mode} completed`),
-          detail: noPendingAniToMal
-            ? "ANI_TO_MAL now only pushes queued Seanime events. Use BIDIRECTIONAL for a full reconciliation."
-            : `${summary}. Changes/deletions: ${totalChanges}. Failed: ${total.failed}. Pending queue: ${pendingCount()}`,
+          intent: shouldCancelSync.get() ? "warning" : (total.failed ? "warning" : "success"),
+          title: shouldCancelSync.get() ? `Sync ${effectiveMode} cancelled` : `Sync ${effectiveMode} completed`,
+          detail: `${summary}. Changes/deletions: ${totalChanges}. Failed: ${total.failed}. Pending queue: ${pendingCount()}`,
         });
-        if (noPendingAniToMal) addLog("ANI_TO_MAL skipped: no pending queued changes", "info");
-        else addLog(`Sync ${mode} completed | ${summary}`, total.failed ? "warn" : "success");
-        if (noPendingAniToMal) ctx.toast.info("No pending AniList changes to push");
-        else ctx.toast.success(`Sync completed (${totalChanges} changes/deletions, ${total.failed} failed)`);
+        addLog(`Sync ${effectiveMode} completed | ${summary}`, total.failed ? "warn" : "success");
+        ctx.toast.success(`Sync completed (${totalChanges} changes/deletions, ${total.failed} failed)`);
       } catch (err) {
         const raw = toErrorMessage(err);
         const explained = explainSyncError(raw);
         lastSyncSummary.set({
           intent: "alert",
-          title: `Sync ${mode} failed`,
+          title: `Sync ${effectiveMode} failed`,
           detail: explained,
         });
         addLog(`Sync error: ${explained}`, "error");
@@ -2194,7 +2082,7 @@ function init() {
     });
 
     ctx.registerEventHandler("sync-default", () => {
-      void runSync(modeRef.current || "BIDIRECTIONAL");
+      void runSync(modeRef.current || "ANI_TO_MAL");
     });
 
     ctx.registerEventHandler("sync-ani-to-mal", () => {
@@ -2267,7 +2155,7 @@ function init() {
           tray.flex([
             tray.stack([
               tray.text("FullMALSync", { style: { fontWeight: "700", fontSize: "17px" } }),
-              tray.text("AniList ↔ MyAnimeList · Anime + Manga", { className: "malsync-muted" }),
+              tray.text("AniList → MAL + MAL → AniList · Anime + Manga", { className: "malsync-muted" }),
             ], { gap: 1 }),
             tray.badge(syncing ? `Sync ${activeMode || ""}` : (authOk ? "MAL connected" : "MAL disconnected"), {
               intent: syncing ? "info" : (authOk ? "success" : "warning"),
@@ -2317,7 +2205,7 @@ function init() {
                     style: { width: "100%" },
                   }),
                   tray.button({
-                    label: "Push pending ANI → MAL",
+                    label: "ANI → MAL",
                     onClick: "sync-ani-to-mal",
                     intent: "gray-subtle",
                     loading: syncing && activeMode === "ANI_TO_MAL",
@@ -2388,8 +2276,7 @@ function init() {
                   label: "Default mode",
                   fieldRef: modeRef,
                   options: [
-                    { label: "BIDIRECTIONAL (full reconcile)", value: "BIDIRECTIONAL" },
-                    { label: "ANI_TO_MAL (pending queue)", value: "ANI_TO_MAL" },
+                    { label: "ANI_TO_MAL (full sync)", value: "ANI_TO_MAL" },
                     { label: "MAL_TO_ANI (full import)", value: "MAL_TO_ANI" },
                   ],
                 }),
@@ -2398,16 +2285,6 @@ function init() {
                 tray.checkbox({ fieldRef: includeMangaRef, label: "Include Manga" }),
                 tray.checkbox({ fieldRef: syncDeletionsRef, label: "Sync deletions (danger)" }),
                 tray.checkbox({ fieldRef: safeDeletionsRef, label: "Safe deletion history" }),
-                tray.select({
-                  label: "Conflict policy",
-                  fieldRef: conflictPolicyRef,
-                  options: [
-                    { label: "Most progress", value: "MOST_PROGRESS" },
-                    { label: "AniList wins", value: "ANILIST_WINS" },
-                    { label: "MAL wins", value: "MAL_WINS" },
-                    { label: "Skip conflicts", value: "SKIP" },
-                  ],
-                }),
                 tray.switch({ fieldRef: pollEnabledRef, label: "Polling MAL -> AniList" }),
                 tray.input({ fieldRef: pollEveryMinutesRef, label: "Poll every X min (5-60)", placeholder: "15" }),
                 tray.button({ label: "Save preferences", onClick: "save-preferences", intent: "gray-subtle", style: { width: "100%" } }),
