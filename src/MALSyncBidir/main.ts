@@ -1630,12 +1630,47 @@ function init() {
         !sameDateFuzzy(current.completedAt, target.completedAt);
     }
 
-    function getAniCoreFromCtxEntry(kind: MediaKind, mediaId: number): Promise<AniCoreEntry | undefined> {
+    function resolveEntryMalId(kind: MediaKind, mediaId: number, entry: { media?: { idMal?: number } } | undefined, fallbackMalId?: number) {
+      const entryMalId = asNumber(entry?.media?.idMal, 0);
+      if (entryMalId) return entryMalId;
+
+      const cachedMalId = getCachedMalId(kind, mediaId);
+      if (cachedMalId) return cachedMalId;
+
+      return asNumber(fallbackMalId, 0);
+    }
+
+    function getAniCoreFromCollection(kind: MediaKind, mediaId: number, fallbackMalId?: number): AniCoreEntry | undefined {
+      const collection = kind === "ANIME" ? $anilist.getAnimeCollection(true) : $anilist.getMangaCollection(true);
+      for (const list of collection?.MediaListCollection?.lists || []) {
+        for (const entry of list?.entries || []) {
+          if (entry?.media?.id !== mediaId) continue;
+
+          const malId = asNumber(entry?.media?.idMal, 0) || asNumber(fallbackMalId, 0);
+          if (!malId) return undefined;
+          return {
+            kind,
+            mediaId,
+            malId,
+            exists: true,
+            status: entry.status,
+            score: asNumber(entry.score, 0),
+            progress: asNumber(entry.progress, 0),
+            repeat: asNumber(entry.repeat, 0),
+            startedAt: entry.startedAt,
+            completedAt: entry.completedAt,
+          };
+        }
+      }
+
+      return undefined;
+    }
+
+    function getAniCoreFromCtxEntry(kind: MediaKind, mediaId: number, fallbackMalId?: number): Promise<AniCoreEntry | undefined> {
       if (kind === "ANIME") {
         return ctx.anime.getAnimeEntry(mediaId)
           .then((entry) => {
-            const media = $anilist.getAnime(mediaId);
-            const malId = media?.idMal;
+            const malId = resolveEntryMalId(kind, mediaId, entry, fallbackMalId);
             if (!malId) return undefined;
             return {
               kind,
@@ -1650,13 +1685,12 @@ function init() {
               completedAt: parseDateToFuzzy(entry?.listData?.completedAt),
             } as AniCoreEntry;
           })
-          .catch(() => undefined);
+          .catch(() => getAniCoreFromCollection(kind, mediaId, fallbackMalId));
       }
 
       return ctx.manga.getMangaEntry(mediaId)
         .then((entry) => {
-          const media = $anilist.getManga(mediaId);
-          const malId = media?.idMal;
+          const malId = resolveEntryMalId(kind, mediaId, entry, fallbackMalId);
           if (!malId) return undefined;
           return {
             kind,
@@ -1671,7 +1705,7 @@ function init() {
             completedAt: parseDateToFuzzy(entry?.listData?.completedAt),
           } as AniCoreEntry;
         })
-        .catch(() => undefined);
+        .catch(() => getAniCoreFromCollection(kind, mediaId, fallbackMalId));
     }
 
     async function buildMalMap(kind: MediaKind): Promise<Map<number, MalCoreEntry> | undefined> {
@@ -1733,8 +1767,9 @@ function init() {
       if (kind === "MANGA" && !settings.includeManga) return "skipped";
 
       try {
-        const aniCore = await getAniCoreFromCtxEntry(kind, mediaId);
+        const aniCore = await getAniCoreFromCtxEntry(kind, mediaId, fallbackMalId);
         if (!aniCore) {
+          addDebug("ANI_CORE_MISSING", { kind, mediaId, fallbackMalId, event: "single-ani-to-mal" });
           if (fallbackMalId && canSafeDelete(STORAGE.HISTORY_ANI_TO_MAL, kind, fallbackMalId, settings)) {
             const deleted = await malClient.remove(kind, fallbackMalId);
             if (deleted) {
@@ -2006,21 +2041,60 @@ function init() {
       return undefined;
     }
 
+    function getCachedMalId(kind: MediaKind, mediaId: number): number | undefined {
+      try {
+        const media = kind === "ANIME" ? $anilist.getAnime(mediaId) : $anilist.getManga(mediaId);
+        const malId = asNumber(media?.idMal, 0);
+        return malId || undefined;
+      } catch (_) {
+        return undefined;
+      }
+    }
+
     async function handlePostUpdate(mediaId?: number, event?: string) {
       const settings = loadSettings();
-      if (!settings.liveSync) return;
-      if (isSyncing.get()) return;
-      if (!mediaId) return;
-      if (event === "delete" && !settings.syncDeletions) return;
+      if (!mediaId) {
+        addDebug("LIVE_SYNC_SKIPPED", { event, reason: "missing mediaId" });
+        return;
+      }
+      if (!settings.liveSync) {
+        addDebug("LIVE_SYNC_SKIPPED", { mediaId, event, reason: "live sync disabled" });
+        return;
+      }
+      if (isSyncing.get()) {
+        addDebug("LIVE_SYNC_SKIPPED", { mediaId, event, reason: "sync already running" });
+        return;
+      }
+      if (event === "delete" && !settings.syncDeletions) {
+        addDebug("LIVE_SYNC_SKIPPED", { mediaId, event, reason: "delete sync disabled" });
+        return;
+      }
 
       try {
+        const pending = loadPendingQueue()[String(mediaId)];
+        const resolved = resolveReferenceForMedia(mediaId);
+        const kind = pending?.kind || resolved.kind || inferKindByMediaId(mediaId);
+        const fallbackMalId = pending?.malId || resolved.malId || (kind ? getCachedMalId(kind, mediaId) : undefined);
+
+        if (!kind) {
+          addLog(`Live sync skipped for ${mediaId}: media kind could not be resolved`, "warn");
+          addDebug("LIVE_SYNC_SKIPPED", { mediaId, event, pending, resolved, reason: "kind not resolved" });
+          return;
+        }
+        if (event === "delete" && !fallbackMalId) {
+          addLog(`Live sync skipped for ${kind} ${mediaId}: MAL ID missing for deletion`, "warn");
+          addDebug("LIVE_SYNC_SKIPPED", { mediaId, kind, event, pending, resolved, reason: "mal id missing for deletion" });
+          return;
+        }
+
         await tokenManager.refreshIfNeeded();
-        const kind = inferKindByMediaId(mediaId);
-        if (!kind) return;
-        const outcome = await syncSingleAniToMal(kind, mediaId);
+        await wait(1000);
+        const outcome = await syncSingleAniToMal(kind, mediaId, fallbackMalId);
+        addDebug("LIVE_SYNC_RESULT", { mediaId, kind, malId: fallbackMalId, event, outcome });
         if (outcome !== "failed") removePending(mediaId);
       } catch (err) {
         addLog(`Live sync error: ${(err as Error).message}`, "warn");
+        addDebug("LIVE_SYNC_ERROR", { mediaId, event, error: toErrorMessage(err) });
       }
     }
 

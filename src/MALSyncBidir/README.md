@@ -15,4 +15,4 @@ AniList and MyAnimeList synchronization for:
 
 `MAL_TO_ANI` remains available as a separate import mode. The old `BIDIRECTIONAL` UI option was removed to avoid aggressive AniList reconciliation and reduce AniList rate-limit pressure.
 
-Seanime hooks still maintain the pending AniList → MAL queue for live updates; a full `ANI_TO_MAL` run clears processed entries after successful writes or already-synced confirmation.
+Seanime hooks still maintain the pending AniList → MAL queue for live updates. Live updates resolve Manga/Anime through the pending queue and persistent reference index before falling back to the AniList cache; a full `ANI_TO_MAL` run clears processed entries after successful writes or already-synced confirmation.
