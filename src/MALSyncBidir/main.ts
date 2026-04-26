@@ -264,76 +264,60 @@ function coreFingerprint(entry: {
 }
 
 function init() {
-  const PENDING_ANI_TO_MAL_STORAGE = "malsync_bidir.pendingAniToMal";
-  const POST_UPDATE_SIGNAL_KEY = "malsync_bidir.signal.post_update";
-
-  function queuePendingAniToMal(mediaId?: number) {
-    if (!mediaId) return;
-    const current = ($storage.get(PENDING_ANI_TO_MAL_STORAGE) || {}) as Record<string, PendingAniChange>;
-    let kind: MediaKind | undefined;
-    let malId: number | undefined;
-    try {
-      const anime = $anilist.getAnime(mediaId);
-      if (anime?.idMal) {
-        kind = "ANIME";
-        malId = Number(anime.idMal);
-      }
-    } catch (_) { /* noop */ }
-    if (!kind) {
-      try {
-        const manga = $anilist.getManga(mediaId);
-        if (manga?.idMal) {
-          kind = "MANGA";
-          malId = Number(manga.idMal);
-        }
-      } catch (_) { /* noop */ }
-    }
-    current[String(mediaId)] = { mediaId, at: Date.now(), kind, malId };
-    $storage.set(PENDING_ANI_TO_MAL_STORAGE, current);
-  }
-
   $app.onPostUpdateEntry((e) => {
-    if (e.mediaId) {
-      queuePendingAniToMal(e.mediaId);
-      $store.set(POST_UPDATE_SIGNAL_KEY, {
-        mediaId: e.mediaId,
-        at: Date.now(),
-      });
+    try {
+      if (e.mediaId) {
+        $store.set("malsync_bidir.signal.post_update", {
+          mediaId: e.mediaId,
+          event: "entry",
+          at: Date.now(),
+        });
+      }
+    } finally {
+      e.next();
     }
-    e.next();
   });
 
   $app.onPostUpdateEntryProgress((e) => {
-    if (e.mediaId) {
-      queuePendingAniToMal(e.mediaId);
-      $store.set(POST_UPDATE_SIGNAL_KEY, {
-        mediaId: e.mediaId,
-        at: Date.now(),
-      });
+    try {
+      if (e.mediaId) {
+        $store.set("malsync_bidir.signal.post_update", {
+          mediaId: e.mediaId,
+          event: "progress",
+          at: Date.now(),
+        });
+      }
+    } finally {
+      e.next();
     }
-    e.next();
   });
 
   $app.onPostUpdateEntryRepeat((e) => {
-    if (e.mediaId) {
-      queuePendingAniToMal(e.mediaId);
-      $store.set(POST_UPDATE_SIGNAL_KEY, {
-        mediaId: e.mediaId,
-        at: Date.now(),
-      });
+    try {
+      if (e.mediaId) {
+        $store.set("malsync_bidir.signal.post_update", {
+          mediaId: e.mediaId,
+          event: "repeat",
+          at: Date.now(),
+        });
+      }
+    } finally {
+      e.next();
     }
-    e.next();
   });
 
   $app.onPostDeleteEntry((e) => {
-    if (e.mediaId) {
-      queuePendingAniToMal(e.mediaId);
-      $store.set(POST_UPDATE_SIGNAL_KEY, {
-        mediaId: e.mediaId,
-        at: Date.now(),
-      });
+    try {
+      if (e.mediaId) {
+        $store.set("malsync_bidir.signal.post_update", {
+          mediaId: e.mediaId,
+          event: "delete",
+          at: Date.now(),
+        });
+      }
+    } finally {
+      e.next();
     }
-    e.next();
   });
 
   $ui.register((ctx) => {
@@ -705,6 +689,36 @@ function init() {
 
     function savePendingQueue(queue: Record<string, PendingAniChange>) {
       $storage.set(STORAGE.PENDING_ANI_TO_MAL, queue);
+    }
+
+    function queuePendingAniToMal(mediaId?: number) {
+      if (!mediaId) return;
+
+      const queue = loadPendingQueue();
+      let kind: MediaKind | undefined;
+      let malId: number | undefined;
+
+      try {
+        const anime = $anilist.getAnime(mediaId);
+        if (anime?.idMal) {
+          kind = "ANIME";
+          malId = Number(anime.idMal);
+        }
+      } catch (_) { /* noop */ }
+
+      if (!kind) {
+        try {
+          const manga = $anilist.getManga(mediaId);
+          if (manga?.idMal) {
+            kind = "MANGA";
+            malId = Number(manga.idMal);
+          }
+        } catch (_) { /* noop */ }
+      }
+
+      queue[String(mediaId)] = { mediaId, at: Date.now(), kind, malId };
+      savePendingQueue(queue);
+      addDebug("PENDING_ANI_TO_MAL_QUEUED", { mediaId, kind, malId, pending: Object.keys(queue).length });
     }
 
     function removePending(mediaId: number) {
@@ -1819,7 +1833,8 @@ function init() {
       addLog("Pending AniList -> MAL queue cleared", "warn");
     });
 
-    $store.watch<{ mediaId?: number }>(POST_UPDATE_SIGNAL_KEY, (payload) => {
+    $store.watch<{ mediaId?: number; event?: string; at?: number }>(POST_UPDATE_SIGNAL_KEY, (payload) => {
+      queuePendingAniToMal(payload?.mediaId);
       void handlePostUpdate(payload?.mediaId);
     });
 
