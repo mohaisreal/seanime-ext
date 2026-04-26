@@ -2325,7 +2325,7 @@ function init() {
                 ], { gap: 3 }),
                 authUrl ? tray.anchor({
                   href: authUrl,
-                  text: "Open MAL authorization",
+                  text: "Open MAL authorization or copy this: " + authUrl,
                   target: "_blank",
                 }) : tray.alert({
                   title: "Missing PKCE link",
