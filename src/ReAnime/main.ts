@@ -9,6 +9,7 @@ type ReAnimeTitle = {
 
 type ReAnimeSearchItem = {
     anime_id: string
+    anilist_id?: number
     title?: ReAnimeTitle
     subbed?: number
     dubbed?: number
@@ -45,8 +46,13 @@ type ReAnimeEpisodeLink = {
     softsub?: boolean
 }
 
+type ReAnimeAnimeIdentity = {
+    anime_id?: string
+    anilist_id?: number
+}
+
 type ReAnimeWatchResponse = {
-    anime?: { anime_id?: string; sub_release?: { airing_at?: string; episode?: number } }
+    anime?: ReAnimeAnimeIdentity & { sub_release?: { airing_at?: string; episode?: number } }
     episode_id?: string
     episode_links?: ReAnimeEpisodeLink[]
     current?: number
@@ -54,8 +60,13 @@ type ReAnimeWatchResponse = {
     progress?: { episode_id?: string }
 }
 
+type ReAnimeFlixResponse = {
+    success?: boolean
+    servers?: ReAnimeEpisodeLink[]
+}
+
 type DecodedDataNode = {
-    anime?: { anime_id?: string; title?: ReAnimeTitle; subbed?: number; dubbed?: number; episodes?: number }
+    anime?: ReAnimeAnimeIdentity & { title?: ReAnimeTitle; subbed?: number; dubbed?: number; episodes?: number }
     episodes?: ReAnimeEpisodeListResponse
 }
 
@@ -66,11 +77,12 @@ class Provider {
     private _episodeCache = new Map<string, EpisodeDetails[]>()
     private _watchCache = new Map<string, ReAnimeWatchResponse>()
     private _resolvedLinkCache = new Map<string, VideoSource>()
+    private _anilistIdCache = new Map<string, number>()
 
     getSettings(): Settings {
         return {
-            // Re:ANIME exposes episode links grouped by serverName. The site currently
-            // prioritizes HD-2/HD-1 and keeps "maze" as its default client-side server.
+            // Re:ANIME exposes playable links grouped by serverName. The site currently
+            // prioritizes HD-2/HD-1 and can still expose legacy "maze" links.
             episodeServers: ["HD-2", "HD-1", "maze", "default"],
             supportsDub: true,
         }
@@ -143,12 +155,15 @@ class Provider {
 
         const results = items
             .filter(item => !!item.anime_id)
-            .map(item => ({
-                id: item.anime_id,
-                title: this._title(item.title),
-                url: `${this.baseUrl}/anime/${item.anime_id}`,
-                subOrDub: this._subOrDub(item),
-            }))
+            .map(item => {
+                this._rememberAnimeIdentity(item.anime_id, item)
+                return {
+                    id: item.anime_id,
+                    title: this._title(item.title),
+                    url: `${this.baseUrl}/anime/${item.anime_id}`,
+                    subOrDub: this._subOrDub(item),
+                }
+            })
 
         if (!preferDub) return results
 
@@ -194,6 +209,7 @@ class Provider {
 
         const root = this._decodeSvelteData(data?.nodes?.[1]?.data) as DecodedDataNode | null
         const canonicalId = root?.anime?.anime_id || id
+        this._rememberAnimeIdentity(id, root?.anime)
         const rawEpisodes = root?.episodes?.data || []
         const episodes = rawEpisodes
             .map(ep => this._toEpisodeDetails(canonicalId, ep))
@@ -254,7 +270,14 @@ class Provider {
             if (watch) this._watchCache.set(cacheKey, watch)
         }
 
-        const links = this._selectLinks(watch?.episode_links || [], server)
+        if (watch?.anime) this._rememberAnimeIdentity(animeId, watch.anime)
+
+        let candidateLinks = watch?.episode_links || []
+        if (candidateLinks.length === 0) {
+            candidateLinks = await this._findFlixServers(animeId, number)
+        }
+
+        const links = this._selectLinks(candidateLinks, server)
         const videoSources: VideoSource[] = []
 
         for (const link of links) {
@@ -289,11 +312,45 @@ class Provider {
         return { animeId: animeId || episode.id, number: episode.number }
     }
 
+    private async _findFlixServers(animeId: string, number: number): Promise<ReAnimeEpisodeLink[]> {
+        const anilistId = await this._getAnilistId(animeId)
+        if (!anilistId) return []
+
+        const data = await this._json<ReAnimeFlixResponse>(
+            `${this.baseUrl}/api/flix/${anilistId}/${number}`,
+        )
+
+        return data?.servers || []
+    }
+
+    private async _getAnilistId(animeId: string): Promise<number | null> {
+        const cached = this._anilistIdCache.get(animeId)
+        if (cached) return cached
+
+        const data = await this._json<{ nodes?: { data?: unknown[] }[] }>(
+            `${this.baseUrl}/anime/${encodeURIComponent(animeId)}/__data.json`,
+        )
+
+        const root = this._decodeSvelteData(data?.nodes?.[1]?.data) as DecodedDataNode | null
+        this._rememberAnimeIdentity(animeId, root?.anime)
+
+        return this._anilistIdCache.get(animeId)
+            || (root?.anime?.anime_id ? this._anilistIdCache.get(root.anime.anime_id) || null : null)
+    }
+
+    private _rememberAnimeIdentity(requestedId: string, anime?: ReAnimeAnimeIdentity): void {
+        const anilistId = Number(anime?.anilist_id)
+        if (!Number.isFinite(anilistId) || anilistId <= 0) return
+
+        this._anilistIdCache.set(requestedId, anilistId)
+        if (anime?.anime_id) this._anilistIdCache.set(anime.anime_id, anilistId)
+    }
+
     private _selectLinks(links: ReAnimeEpisodeLink[], server: string): ReAnimeEpisodeLink[] {
         const usable = links.filter(link => !!link.dataLink && !!link.serverName)
         if (usable.length === 0) return []
 
-        const requested = server.toLowerCase()
+        const requested = (server || "default").toLowerCase()
         const isDefault = !server || requested === "default"
         const preferredServers = ["hd-2", "hd-1", "maze"]
 
