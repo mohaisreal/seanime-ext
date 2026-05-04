@@ -1,0 +1,13 @@
+{
+  "id": "reanime",
+  "name": "Re:ANIME",
+  "version": "0.0.1",
+  "manifestURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/dev/src/ReAnime/manifest.json",
+  "language": "typescript",
+  "type": "onlinestream-provider",
+  "description": "Re:ANIME is an online streaming provider for English subs and dubs.",
+  "author": "mohaisreal",
+  "icon": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/dev/src/ReAnime/favicon.ico",
+  "lang": "en",
+  "payloadURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/dev/src/ReAnime/main.ts"
+}
