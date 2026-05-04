@@ -1,5 +1,10 @@
 /// <reference path="./online-streaming-provider.d.ts" />
 
+declare const Buffer: any
+declare const CryptoJS: any
+declare function $toBytes(value: any): Uint8Array
+declare function $toString(value: any): string
+
 type ReAnimeTitle = {
     english?: string
     native?: string
@@ -65,6 +70,35 @@ type ReAnimeFlixResponse = {
     servers?: ReAnimeEpisodeLink[]
 }
 
+type ResolvedSource = {
+    url: string
+    subtitles: VideoSubtitle[]
+}
+
+type CachedResolvedSource = {
+    source: ResolvedSource
+    expiresAt: number
+}
+
+type FlixCloudFields = {
+    keyField: string
+    ivField: string
+    containerName: string
+    arrayName: string
+    objectName: string
+    tokenField: string
+    keyFrag2Field: string
+}
+
+type FlixCloudCryptoData = {
+    seed: string
+    payload: string
+    token: string
+    frag1: Uint8Array
+    frag2: Uint8Array
+    iv: Uint8Array
+}
+
 type DecodedDataNode = {
     anime?: ReAnimeAnimeIdentity & { title?: ReAnimeTitle; subbed?: number; dubbed?: number; episodes?: number }
     episodes?: ReAnimeEpisodeListResponse
@@ -77,6 +111,7 @@ class Provider {
     private _episodeCache = new Map<string, EpisodeDetails[]>()
     private _watchCache = new Map<string, ReAnimeWatchResponse>()
     private _resolvedLinkCache = new Map<string, VideoSource>()
+    private _playerResultCache = new Map<string, CachedResolvedSource>()
     private _anilistIdCache = new Map<string, number>()
 
     getSettings(): Settings {
@@ -394,25 +429,31 @@ class Provider {
         const language = this._languageLabel(link.dataType)
         const quality = `${link.serverName || "Re:ANIME"} - ${language}${link.softsub ? " Softsub" : ""}`
         const cacheKey = `${normalizedUrl}|${quality}`
+        const canCacheVideoSource = !this._originOf(normalizedUrl).includes("flixcloud.cc")
 
-        const cached = this._resolvedLinkCache.get(cacheKey)
+        const cached = canCacheVideoSource ? this._resolvedLinkCache.get(cacheKey) : undefined
         if (cached) return cached
 
-        const resolved = await this._resolveSourceUrl(normalizedUrl)
+        const resolved = await this._resolveSource(normalizedUrl)
+        const sourceUrl = resolved?.url || normalizedUrl
         const source: VideoSource = {
-            url: resolved || normalizedUrl,
-            type: this._videoType(resolved || normalizedUrl),
+            url: sourceUrl,
+            type: this._videoType(sourceUrl),
             quality,
             label: language,
-            subtitles: [],
+            subtitles: resolved?.subtitles || [],
         }
 
-        this._resolvedLinkCache.set(cacheKey, source)
+        if (canCacheVideoSource) this._resolvedLinkCache.set(cacheKey, source)
         return source
     }
 
-    private async _resolveSourceUrl(playerUrl: string): Promise<string | null> {
-        if (this._videoType(playerUrl) !== "unknown") return playerUrl
+    private async _resolveSource(playerUrl: string): Promise<ResolvedSource | null> {
+        if (this._videoType(playerUrl) !== "unknown") return { url: playerUrl, subtitles: [] }
+
+        const cached = this._playerResultCache.get(playerUrl)
+        if (cached && cached.expiresAt > Date.now()) return cached.source
+        if (cached) this._playerResultCache.delete(playerUrl)
 
         try {
             const res = await fetch(playerUrl, {
@@ -422,18 +463,141 @@ class Provider {
 
             if (!res.ok) return null
 
-            const contentType = res.headers.get("content-type") || ""
+            const contentType = this._contentType(res)
             const body = await res.text()
+            let resolved: ResolvedSource | null = null
 
             if (contentType.includes("application/json")) {
                 const direct = this._extractDirectUrlFromJson(body)
-                if (direct) return direct
+                if (direct) resolved = { url: direct, subtitles: [] }
+            } else {
+                const direct = this._extractDirectUrlFromHtml(body)
+                if (direct) {
+                    resolved = { url: direct, subtitles: [] }
+                } else if (this._originOf(playerUrl).includes("flixcloud.cc")) {
+                    resolved = await this._decryptFlixCloudSource(playerUrl, body)
+                }
             }
 
-            return this._extractDirectUrlFromHtml(body)
+            if (resolved) {
+                this._playerResultCache.set(playerUrl, {
+                    source: resolved,
+                    expiresAt: Date.now() + 120000,
+                })
+            }
+            return resolved
         } catch {
             return null
         }
+    }
+
+    private _contentType(res: any): string {
+        const response = res as any
+        if (response.contentType) return response.contentType
+        if (typeof response.headers?.get === "function") return response.headers.get("content-type") || ""
+        return response.headers?.["content-type"] || response.headers?.["Content-Type"] || ""
+    }
+
+    private async _decryptFlixCloudSource(playerUrl: string, html: string): Promise<ResolvedSource | null> {
+        const cryptoData = await this._extractFlixCloudCryptoData(html)
+        if (!cryptoData) return null
+
+        const tokenResponse = await fetch(`${this._originOf(playerUrl)}/api/m3u8/${cryptoData.token}`, {
+            credentials: "include",
+            headers: {
+                "Accept": "application/json,*/*",
+                "Origin": this._originOf(playerUrl),
+                "Referer": playerUrl,
+            },
+        })
+
+        if (!tokenResponse.ok) return null
+
+        let tokenData: Record<string, string>
+        try {
+            tokenData = await tokenResponse.json()
+        } catch {
+            return null
+        }
+
+        const videoField = this._sha256Hex(`${cryptoData.token}vid`).substring(0, 10)
+        const keyField = this._sha256Hex(`${cryptoData.token}key`).substring(0, 10)
+        const encryptedUrl = tokenData[videoField]
+        const tokenKey = tokenData[keyField]
+        if (!encryptedUrl || !tokenKey) return null
+
+        const wasmKey = await this._runFlixCloudWasmTransform(
+            cryptoData.payload,
+            cryptoData.frag1,
+            cryptoData.frag2,
+            this._base64ToBytes(tokenKey),
+            parseInt(cryptoData.seed.substring(0, 8), 16),
+        )
+        if (!wasmKey) return null
+
+        const derived = this._pbkdf2Sha256(wasmKey, this._utf8Bytes(cryptoData.seed), 1000, 32)
+        for (let i = 0; i < derived.length; i++) {
+            derived[i] = derived[i] ^ cryptoData.seed.charCodeAt(i % cryptoData.seed.length)
+        }
+
+        const aesKey = this._sha256Bytes(derived)
+        const directUrl = await this._aesCbcDecryptToString(encryptedUrl, aesKey, cryptoData.iv)
+        if (!directUrl || this._videoType(directUrl) === "unknown") return null
+
+        return {
+            url: this._cleanUrl(directUrl),
+            subtitles: [],
+        }
+    }
+
+    private async _extractFlixCloudCryptoData(html: string): Promise<FlixCloudCryptoData | null> {
+        const seed = this._extractJsStringField(html, "obfuscation_seed")
+        const payload = this._extractJsStringField(html, "w_payload")
+        if (!seed || !payload) return null
+
+        const fields = await this._flixCloudFields(seed)
+        const token = this._extractJsStringField(html, fields.tokenField)
+        const frag1 = this._extractJsStringField(html, fields.keyField)
+        const frag2 = this._extractJsStringField(html, fields.keyFrag2Field)
+        const iv = this._extractJsStringField(html, fields.ivField)
+        if (!token || !frag1 || !frag2 || !iv) return null
+
+        return {
+            seed,
+            payload,
+            token,
+            frag1: this._base64ToBytes(frag1),
+            frag2: this._base64ToBytes(frag2),
+            iv: this._base64ToBytes(iv),
+        }
+    }
+
+    private async _flixCloudFields(seed: string): Promise<FlixCloudFields> {
+        let base = seed
+        for (let i = 0; i < 3; i++) base = this._sha256Hex(`${base}${i}`)
+
+        let second = base
+        for (let i = 0; i < 3; i++) second = this._sha256Hex(`${second}${i}`)
+
+        return {
+            keyField: `kf_${base.substring(8, 16)}`,
+            ivField: `ivf_${base.substring(16, 24)}`,
+            containerName: `cd_${base.substring(24, 32)}`,
+            arrayName: `ad_${base.substring(32, 40)}`,
+            objectName: `od_${base.substring(40, 48)}`,
+            tokenField: `${base.substring(48, 64)}_${base.substring(56, 64)}`,
+            keyFrag2Field: `${second.substring(0, 16)}_${second.substring(16, 24)}`,
+        }
+    }
+
+    private _extractJsStringField(html: string, field: string): string | null {
+        const escaped = this._escapeRegex(field)
+        const pattern = new RegExp(`(?:["']${escaped}["']|\\b${escaped}\\b)\\s*:\\s*["']([^"']+)["']`)
+        return pattern.exec(html)?.[1] || null
+    }
+
+    private _escapeRegex(value: string): string {
+        return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
     }
 
     private _extractDirectUrlFromJson(body: string): string | null {
@@ -482,6 +646,593 @@ class Provider {
         }
 
         return null
+    }
+
+    private async _runFlixCloudWasmTransform(
+        payload: string,
+        frag1: Uint8Array,
+        frag2: Uint8Array,
+        tokenKey: Uint8Array,
+        seed: number,
+    ): Promise<Uint8Array | null> {
+        const wasmBytes = this._base64ToBytes(payload)
+        const native = await this._runNativeWasmTransform(wasmBytes, frag1, frag2, tokenKey, seed)
+        if (native) return native
+        return this._runInterpretedWasmTransform(wasmBytes, frag1, frag2, tokenKey, seed)
+    }
+
+    private async _runNativeWasmTransform(
+        wasmBytes: Uint8Array,
+        frag1: Uint8Array,
+        frag2: Uint8Array,
+        tokenKey: Uint8Array,
+        seed: number,
+    ): Promise<Uint8Array | null> {
+        try {
+            const webAssembly = (globalThis as any).WebAssembly
+            if (!webAssembly?.instantiate) return null
+
+            const instantiated = await webAssembly.instantiate(wasmBytes, {})
+            const exports = instantiated.instance.exports
+            const memory = exports.memory
+            if (!memory || typeof exports._s !== "function" || typeof exports._r !== "function") return null
+
+            if (memory.buffer.byteLength === 0) memory.grow(1)
+            const heap = new Uint8Array(memory.buffer)
+            const length = frag1.length
+            const frag1Ptr = 1000
+            const frag2Ptr = frag1Ptr + length
+            const tokenKeyPtr = frag2Ptr + length
+            const outputPtr = tokenKeyPtr + length
+
+            heap.set(frag1, frag1Ptr)
+            heap.set(frag2, frag2Ptr)
+            heap.set(tokenKey, tokenKeyPtr)
+            exports._s(seed)
+            exports._r(frag1Ptr, frag2Ptr, tokenKeyPtr, outputPtr, length)
+
+            return new Uint8Array(heap.subarray(outputPtr, outputPtr + length))
+        } catch {
+            return null
+        }
+    }
+
+    private _runInterpretedWasmTransform(
+        wasmBytes: Uint8Array,
+        frag1: Uint8Array,
+        frag2: Uint8Array,
+        tokenKey: Uint8Array,
+        seed: number,
+    ): Uint8Array | null {
+        const bodies = this._wasmFunctionBodies(wasmBytes)
+        if (bodies.length < 2) return null
+
+        const length = frag1.length
+        const memory = new Uint8Array(4096 + length * 4)
+        const frag1Ptr = 1000
+        const frag2Ptr = frag1Ptr + length
+        const tokenKeyPtr = frag2Ptr + length
+        const outputPtr = tokenKeyPtr + length
+
+        memory.set(frag1, frag1Ptr)
+        memory.set(frag2, frag2Ptr)
+        memory.set(tokenKey, tokenKeyPtr)
+
+        const ok = this._executeWasmBody(bodies[1], [frag1Ptr, frag2Ptr, tokenKeyPtr, outputPtr, length], [seed], memory)
+        if (!ok) return null
+
+        return new Uint8Array(memory.subarray(outputPtr, outputPtr + length))
+    }
+
+    private _wasmFunctionBodies(bytes: Uint8Array): Uint8Array[] {
+        const bodies: Uint8Array[] = []
+        let cursor = 8
+
+        const readUleb = (): number => {
+            let result = 0
+            let shift = 0
+            while (cursor < bytes.length) {
+                const byte = bytes[cursor++]
+                result |= (byte & 0x7f) << shift
+                if ((byte & 0x80) === 0) break
+                shift += 7
+            }
+            return result
+        }
+
+        while (cursor < bytes.length) {
+            const sectionId = bytes[cursor++]
+            const sectionSize = readUleb()
+            const sectionEnd = cursor + sectionSize
+
+            if (sectionId === 10) {
+                const functionCount = readUleb()
+                for (let i = 0; i < functionCount; i++) {
+                    const bodySize = readUleb()
+                    bodies.push(bytes.subarray(cursor, cursor + bodySize))
+                    cursor += bodySize
+                }
+                break
+            }
+
+            cursor = sectionEnd
+        }
+
+        return bodies
+    }
+
+    private _executeWasmBody(body: Uint8Array, params: number[], globals: number[], memory: Uint8Array): boolean {
+        let pc = 0
+        const readUleb = (): number => {
+            let result = 0
+            let shift = 0
+            while (pc < body.length) {
+                const byte = body[pc++]
+                result |= (byte & 0x7f) << shift
+                if ((byte & 0x80) === 0) break
+                shift += 7
+            }
+            return result
+        }
+        const readSleb = (): number => {
+            let result = 0
+            let shift = 0
+            let byte = 0
+            do {
+                byte = body[pc++]
+                result |= (byte & 0x7f) << shift
+                shift += 7
+            } while ((byte & 0x80) !== 0)
+
+            if (shift < 32 && (byte & 0x40) !== 0) result |= (~0 << shift)
+            return result | 0
+        }
+
+        const locals = params.slice()
+        const localDeclCount = readUleb()
+        for (let i = 0; i < localDeclCount; i++) {
+            const count = readUleb()
+            pc++ // value type, always i32 for Flixcloud's tiny payload
+            for (let j = 0; j < count; j++) locals.push(0)
+        }
+
+        const blockEnds = this._wasmBlockEnds(body, pc)
+        const stack: number[] = []
+        const controlStack: { isLoop: boolean; startPc: number; endPc: number }[] = []
+        let steps = 0
+
+        const branch = (depth: number): boolean => {
+            const targetIndex = controlStack.length - 1 - depth
+            if (targetIndex < 0) return false
+            const frame = controlStack[targetIndex]
+            if (frame.isLoop) {
+                controlStack.length = targetIndex + 1
+                pc = frame.startPc
+            } else {
+                controlStack.length = targetIndex
+                pc = frame.endPc + 1
+            }
+            return true
+        }
+
+        while (pc < body.length && steps++ < 100000) {
+            const opPc = pc
+            const op = body[pc++]
+
+            switch (op) {
+                case 0x02: // block
+                case 0x03: { // loop
+                    pc++ // block type
+                    controlStack.push({
+                        isLoop: op === 0x03,
+                        startPc: pc,
+                        endPc: blockEnds.get(opPc) || body.length - 1,
+                    })
+                    break
+                }
+                case 0x0b: { // end
+                    if (controlStack.length === 0) return true
+                    controlStack.pop()
+                    break
+                }
+                case 0x0c: { // br
+                    if (!branch(readUleb())) return false
+                    break
+                }
+                case 0x0d: { // br_if
+                    const depth = readUleb()
+                    const condition = stack.pop() || 0
+                    if (condition !== 0 && !branch(depth)) return false
+                    break
+                }
+                case 0x20: // local.get
+                    stack.push(locals[readUleb()] | 0)
+                    break
+                case 0x21: // local.set
+                    locals[readUleb()] = stack.pop() || 0
+                    break
+                case 0x23: // global.get
+                    stack.push(globals[readUleb()] | 0)
+                    break
+                case 0x41: // i32.const
+                    stack.push(readSleb())
+                    break
+                case 0x2d: { // i32.load8_u
+                    readUleb()
+                    const offset = readUleb()
+                    const address = (stack.pop() || 0) + offset
+                    stack.push(memory[address] || 0)
+                    break
+                }
+                case 0x3a: { // i32.store8
+                    readUleb()
+                    const offset = readUleb()
+                    const value = stack.pop() || 0
+                    const address = (stack.pop() || 0) + offset
+                    memory[address] = value & 0xff
+                    break
+                }
+                case 0x4f: { // i32.ge_u
+                    const right = (stack.pop() || 0) >>> 0
+                    const left = (stack.pop() || 0) >>> 0
+                    stack.push(left >= right ? 1 : 0)
+                    break
+                }
+                case 0x6a: { // i32.add
+                    const right = stack.pop() || 0
+                    const left = stack.pop() || 0
+                    stack.push((left + right) | 0)
+                    break
+                }
+                case 0x6b: { // i32.sub
+                    const right = stack.pop() || 0
+                    const left = stack.pop() || 0
+                    stack.push((left - right) | 0)
+                    break
+                }
+                case 0x6c: { // i32.mul
+                    const right = stack.pop() || 0
+                    const left = stack.pop() || 0
+                    stack.push(Math.imul(left, right))
+                    break
+                }
+                case 0x71: { // i32.and
+                    const right = stack.pop() || 0
+                    const left = stack.pop() || 0
+                    stack.push(left & right)
+                    break
+                }
+                case 0x72: { // i32.or
+                    const right = stack.pop() || 0
+                    const left = stack.pop() || 0
+                    stack.push(left | right)
+                    break
+                }
+                case 0x73: { // i32.xor
+                    const right = stack.pop() || 0
+                    const left = stack.pop() || 0
+                    stack.push(left ^ right)
+                    break
+                }
+                case 0x74: { // i32.shl
+                    const shift = (stack.pop() || 0) & 31
+                    const value = stack.pop() || 0
+                    stack.push(value << shift)
+                    break
+                }
+                case 0x76: { // i32.shr_u
+                    const shift = (stack.pop() || 0) & 31
+                    const value = stack.pop() || 0
+                    stack.push(value >>> shift)
+                    break
+                }
+                default:
+                    return false
+            }
+        }
+
+        return false
+    }
+
+    private _wasmBlockEnds(body: Uint8Array, codeStart: number): Map<number, number> {
+        const ends = new Map<number, number>()
+        const stack: number[] = []
+        let cursor = codeStart
+
+        const readUlebAt = (): void => {
+            while (cursor < body.length && (body[cursor++] & 0x80) !== 0) {
+                // Skip LEB continuation bytes.
+            }
+        }
+
+        while (cursor < body.length) {
+            const opPc = cursor
+            const op = body[cursor++]
+            switch (op) {
+                case 0x02:
+                case 0x03:
+                    cursor++ // block type
+                    stack.push(opPc)
+                    break
+                case 0x0b:
+                    if (stack.length === 0) return ends
+                    ends.set(stack.pop()!, opPc)
+                    break
+                case 0x0c:
+                case 0x0d:
+                case 0x20:
+                case 0x21:
+                case 0x23:
+                case 0x41:
+                    readUlebAt()
+                    break
+                case 0x2d:
+                case 0x3a:
+                    readUlebAt()
+                    readUlebAt()
+                    break
+                default:
+                    break
+            }
+        }
+
+        return ends
+    }
+
+    private async _aesCbcDecryptToString(cipherTextB64: string, key: Uint8Array, iv: Uint8Array): Promise<string | null> {
+        try {
+            const subtle = (globalThis as any).crypto?.subtle
+            if (subtle?.importKey && subtle?.decrypt) {
+                const cryptoKey = await subtle.importKey("raw", key, { name: "AES-CBC" }, false, ["decrypt"])
+                const decrypted = await subtle.decrypt({ name: "AES-CBC", iv }, cryptoKey, this._base64ToBytes(cipherTextB64))
+                return this._bytesToUtf8(new Uint8Array(decrypted))
+            }
+        } catch {
+            // Fall through to Seanime's documented CryptoJS API.
+        }
+
+        try {
+            if (typeof CryptoJS === "undefined") return null
+            const decrypted = CryptoJS.AES.decrypt(cipherTextB64, key, { iv })
+            const text = decrypted.toString(CryptoJS.enc.Utf8)
+            return text || null
+        } catch {
+            return null
+        }
+    }
+
+    private _pbkdf2Sha256(password: Uint8Array, salt: Uint8Array, iterations: number, keyLength: number): Uint8Array {
+        const hashLength = 32
+        const blocks = Math.ceil(keyLength / hashLength)
+        const derived = new Uint8Array(blocks * hashLength)
+
+        for (let block = 1; block <= blocks; block++) {
+            const blockSalt = this._concatBytes(salt, new Uint8Array([
+                (block >>> 24) & 0xff,
+                (block >>> 16) & 0xff,
+                (block >>> 8) & 0xff,
+                block & 0xff,
+            ]))
+            let u = this._hmacSha256(password, blockSalt)
+            const t = new Uint8Array(u)
+
+            for (let i = 1; i < iterations; i++) {
+                u = this._hmacSha256(password, u)
+                for (let j = 0; j < hashLength; j++) t[j] ^= u[j]
+            }
+
+            derived.set(t, (block - 1) * hashLength)
+        }
+
+        return derived.subarray(0, keyLength)
+    }
+
+    private _hmacSha256(key: Uint8Array, message: Uint8Array): Uint8Array {
+        let normalizedKey = key
+        if (normalizedKey.length > 64) normalizedKey = this._sha256Bytes(normalizedKey)
+
+        const keyBlock = new Uint8Array(64)
+        keyBlock.set(normalizedKey)
+
+        const outer = new Uint8Array(64)
+        const inner = new Uint8Array(64)
+        for (let i = 0; i < 64; i++) {
+            outer[i] = keyBlock[i] ^ 0x5c
+            inner[i] = keyBlock[i] ^ 0x36
+        }
+
+        return this._sha256Bytes(this._concatBytes(outer, this._sha256Bytes(this._concatBytes(inner, message))))
+    }
+
+    private _sha256Hex(value: string | Uint8Array): string {
+        return this._bytesToHex(this._sha256Bytes(value))
+    }
+
+    private _sha256Bytes(value: string | Uint8Array): Uint8Array {
+        const data = typeof value === "string" ? this._utf8Bytes(value) : value
+        const k = [
+            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+            0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+            0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+            0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+            0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+            0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+            0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+        ]
+        const paddedLength = (((data.length + 9 + 63) >> 6) << 6)
+        const bytes = new Uint8Array(paddedLength)
+        bytes.set(data)
+        bytes[data.length] = 0x80
+
+        const bitLengthLow = (data.length << 3) >>> 0
+        const bitLengthHigh = Math.floor(data.length / 0x20000000)
+        bytes[paddedLength - 8] = (bitLengthHigh >>> 24) & 0xff
+        bytes[paddedLength - 7] = (bitLengthHigh >>> 16) & 0xff
+        bytes[paddedLength - 6] = (bitLengthHigh >>> 8) & 0xff
+        bytes[paddedLength - 5] = bitLengthHigh & 0xff
+        bytes[paddedLength - 4] = (bitLengthLow >>> 24) & 0xff
+        bytes[paddedLength - 3] = (bitLengthLow >>> 16) & 0xff
+        bytes[paddedLength - 2] = (bitLengthLow >>> 8) & 0xff
+        bytes[paddedLength - 1] = bitLengthLow & 0xff
+
+        let h0 = 0x6a09e667
+        let h1 = 0xbb67ae85
+        let h2 = 0x3c6ef372
+        let h3 = 0xa54ff53a
+        let h4 = 0x510e527f
+        let h5 = 0x9b05688c
+        let h6 = 0x1f83d9ab
+        let h7 = 0x5be0cd19
+        const w = new Array<number>(64)
+
+        for (let offset = 0; offset < bytes.length; offset += 64) {
+            for (let i = 0; i < 16; i++) {
+                const j = offset + i * 4
+                w[i] = ((bytes[j] << 24) | (bytes[j + 1] << 16) | (bytes[j + 2] << 8) | bytes[j + 3]) >>> 0
+            }
+
+            for (let i = 16; i < 64; i++) {
+                const s0 = this._rotr(w[i - 15], 7) ^ this._rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3)
+                const s1 = this._rotr(w[i - 2], 17) ^ this._rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10)
+                w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0
+            }
+
+            let a = h0
+            let b = h1
+            let c = h2
+            let d = h3
+            let e = h4
+            let f = h5
+            let g = h6
+            let h = h7
+
+            for (let i = 0; i < 64; i++) {
+                const s1 = this._rotr(e, 6) ^ this._rotr(e, 11) ^ this._rotr(e, 25)
+                const ch = (e & f) ^ (~e & g)
+                const temp1 = (h + s1 + ch + k[i] + w[i]) >>> 0
+                const s0 = this._rotr(a, 2) ^ this._rotr(a, 13) ^ this._rotr(a, 22)
+                const maj = (a & b) ^ (a & c) ^ (b & c)
+                const temp2 = (s0 + maj) >>> 0
+
+                h = g
+                g = f
+                f = e
+                e = (d + temp1) >>> 0
+                d = c
+                c = b
+                b = a
+                a = (temp1 + temp2) >>> 0
+            }
+
+            h0 = (h0 + a) >>> 0
+            h1 = (h1 + b) >>> 0
+            h2 = (h2 + c) >>> 0
+            h3 = (h3 + d) >>> 0
+            h4 = (h4 + e) >>> 0
+            h5 = (h5 + f) >>> 0
+            h6 = (h6 + g) >>> 0
+            h7 = (h7 + h) >>> 0
+        }
+
+        const out = new Uint8Array(32)
+        const words = [h0, h1, h2, h3, h4, h5, h6, h7]
+        for (let i = 0; i < words.length; i++) {
+            out[i * 4] = (words[i] >>> 24) & 0xff
+            out[i * 4 + 1] = (words[i] >>> 16) & 0xff
+            out[i * 4 + 2] = (words[i] >>> 8) & 0xff
+            out[i * 4 + 3] = words[i] & 0xff
+        }
+        return out
+    }
+
+    private _rotr(value: number, shift: number): number {
+        return (value >>> shift) | (value << (32 - shift))
+    }
+
+    private _concatBytes(...arrays: Uint8Array[]): Uint8Array {
+        const total = arrays.reduce((sum, array) => sum + array.length, 0)
+        const out = new Uint8Array(total)
+        let offset = 0
+        for (const array of arrays) {
+            out.set(array, offset)
+            offset += array.length
+        }
+        return out
+    }
+
+    private _utf8Bytes(value: string): Uint8Array {
+        try {
+            if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(value)
+        } catch {
+            // Fall through to Seanime's core API.
+        }
+
+        try {
+            if (typeof $toBytes === "function") return $toBytes(value)
+        } catch {
+            // Fall through to a small UTF-8 encoder.
+        }
+
+        const out: number[] = []
+        for (let i = 0; i < value.length; i++) {
+            let codePoint = value.charCodeAt(i)
+            if (codePoint >= 0xd800 && codePoint <= 0xdbff && i + 1 < value.length) {
+                const next = value.charCodeAt(i + 1)
+                if (next >= 0xdc00 && next <= 0xdfff) {
+                    codePoint = 0x10000 + ((codePoint - 0xd800) << 10) + (next - 0xdc00)
+                    i++
+                }
+            }
+
+            if (codePoint < 0x80) out.push(codePoint)
+            else if (codePoint < 0x800) out.push(0xc0 | (codePoint >> 6), 0x80 | (codePoint & 0x3f))
+            else if (codePoint < 0x10000) out.push(0xe0 | (codePoint >> 12), 0x80 | ((codePoint >> 6) & 0x3f), 0x80 | (codePoint & 0x3f))
+            else out.push(0xf0 | (codePoint >> 18), 0x80 | ((codePoint >> 12) & 0x3f), 0x80 | ((codePoint >> 6) & 0x3f), 0x80 | (codePoint & 0x3f))
+        }
+        return new Uint8Array(out)
+    }
+
+    private _bytesToUtf8(value: Uint8Array): string {
+        try {
+            if (typeof TextDecoder !== "undefined") return new TextDecoder().decode(value)
+        } catch {
+            // Fall through to Seanime's core API.
+        }
+
+        try {
+            if (typeof $toString === "function") return $toString(value)
+        } catch {
+            // Fall through to a simple ASCII-compatible decoder.
+        }
+
+        let out = ""
+        for (let i = 0; i < value.length; i++) out += String.fromCharCode(value[i])
+        return decodeURIComponent(escape(out))
+    }
+
+    private _base64ToBytes(value: string): Uint8Array {
+        try {
+            if (typeof Buffer !== "undefined") return new Uint8Array(Buffer.from(value, "base64"))
+        } catch {
+            // Fall through to browser APIs.
+        }
+
+        const atobFn = (globalThis as any).atob
+        if (typeof atobFn === "function") {
+            const binary = atobFn(value)
+            const out = new Uint8Array(binary.length)
+            for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i)
+            return out
+        }
+
+        return CryptoJS.enc.Base64.parse(value)
+    }
+
+    private _bytesToHex(value: Uint8Array): string {
+        let out = ""
+        for (let i = 0; i < value.length; i++) out += value[i].toString(16).padStart(2, "0")
+        return out
     }
 
     private _videoType(url: string): VideoSourceType {
