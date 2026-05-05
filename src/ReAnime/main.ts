@@ -73,6 +73,8 @@ type ReAnimeFlixResponse = {
 type ResolvedSource = {
     url: string
     subtitles: VideoSubtitle[]
+    audioType?: string
+    defaultAudioTrack?: number
 }
 
 type CachedResolvedSource = {
@@ -559,8 +561,46 @@ class Provider {
 
         return {
             url: this._cleanUrl(directUrl),
-            subtitles: [],
+            subtitles: this._extractFlixCloudSubtitles(html),
+            audioType: this._extractJsStringField(html, "audio_type") || undefined,
+            defaultAudioTrack: this._extractJsNumberField(html, "default_audio_track"),
         }
+    }
+
+    private _extractFlixCloudSubtitles(html: string): VideoSubtitle[] {
+        const subtitles: VideoSubtitle[] = []
+        const seen = new Set<string>()
+        const pattern = /\{\s*url:"([^"]+)"\s*,\s*language:"([^"]+)"\s*,\s*format:"([^"]+)"\s*,\s*default:(true|false)/g
+        let match: RegExpExecArray | null
+
+        while ((match = pattern.exec(html)) !== null) {
+            const url = this._cleanUrl(match[1])
+            if (!url || seen.has(url)) continue
+            seen.add(url)
+
+            const language = this._cleanSubtitleLanguage(match[2])
+            subtitles.push({
+                id: `${language.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${subtitles.length + 1}`,
+                url,
+                language,
+                isDefault: match[4] === "true",
+            })
+        }
+
+        if (!subtitles.some(subtitle => subtitle.isDefault)) {
+            const english = subtitles.find(subtitle => subtitle.language.toLowerCase().includes("english"))
+            if (english) english.isDefault = true
+        }
+
+        return subtitles
+    }
+
+    private _cleanSubtitleLanguage(language: string): string {
+        return language
+            .replace(/\\u0028/g, "(")
+            .replace(/\\u0029/g, ")")
+            .replace(/\s+/g, " ")
+            .trim()
     }
 
     private async _extractFlixCloudCryptoData(html: string): Promise<FlixCloudCryptoData | null> {
@@ -607,6 +647,13 @@ class Provider {
         const escaped = this._escapeRegex(field)
         const pattern = new RegExp(`(?:["']${escaped}["']|\\b${escaped}\\b)\\s*:\\s*["']([^"']+)["']`)
         return pattern.exec(html)?.[1] || null
+    }
+
+    private _extractJsNumberField(html: string, field: string): number | undefined {
+        const escaped = this._escapeRegex(field)
+        const pattern = new RegExp(`(?:["']${escaped}["']|\\b${escaped}\\b)\\s*:\\s*(-?\\d+)`)
+        const value = Number(pattern.exec(html)?.[1])
+        return Number.isFinite(value) ? value : undefined
     }
 
     private _escapeRegex(value: string): string {
