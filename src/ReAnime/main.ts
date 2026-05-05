@@ -116,9 +116,10 @@ class Provider {
 
     getSettings(): Settings {
         return {
-            // Re:ANIME exposes playable links grouped by serverName. The site currently
-            // prioritizes HD-2/HD-1 and can still expose legacy "maze" links.
-            episodeServers: ["HD-2", "HD-1", "maze", "default"],
+            // Seanime calls findEpisodeServer once per configured server. Keep a
+            // single logical server and choose the best Re:ANIME source inside it;
+            // otherwise Flixcloud decryption is repeated several times per click.
+            episodeServers: ["default"],
             supportsDub: true,
         }
     }
@@ -230,9 +231,10 @@ class Provider {
         const rawEpisodes = Array.isArray(data)
             ? data
             : data?.data || data?.episodes || []
+        const anilistId = await this._getAnilistId(id)
 
         return rawEpisodes
-            .map(ep => this._toEpisodeDetails(id, ep))
+            .map(ep => this._toEpisodeDetails(id, ep, anilistId || undefined))
             .filter((ep): ep is EpisodeDetails => !!ep)
             .sort((a, b) => a.number - b.number)
     }
@@ -245,21 +247,23 @@ class Provider {
         const root = this._decodeSvelteData(data?.nodes?.[1]?.data) as DecodedDataNode | null
         const canonicalId = root?.anime?.anime_id || id
         this._rememberAnimeIdentity(id, root?.anime)
+        const rawAnilistId = Number(root?.anime?.anilist_id)
+        const anilistId = Number.isFinite(rawAnilistId) && rawAnilistId > 0 ? rawAnilistId : undefined
         const rawEpisodes = root?.episodes?.data || []
         const episodes = rawEpisodes
-            .map(ep => this._toEpisodeDetails(canonicalId, ep))
+            .map(ep => this._toEpisodeDetails(canonicalId, ep, anilistId))
             .filter((ep): ep is EpisodeDetails => !!ep)
 
         // The Svelte data route may carry only the first page of episodes. If the
         // total is known, fill the missing numbers synthetically so Seanime can
-        // still request /api/watch/{anime}/{episode} directly.
+        // still request a concrete episode number directly.
         const total = root?.episodes?.total || root?.anime?.episodes || 0
         if (total > episodes.length) {
             const seen = new Set(episodes.map(ep => ep.number))
             for (let number = 1; number <= total; number++) {
                 if (seen.has(number)) continue
                 episodes.push({
-                    id: `${canonicalId}|${number}`,
+                    id: this._episodeId(canonicalId, number, anilistId),
                     number,
                     url: `${this.baseUrl}/watch/${canonicalId}?ep=${number}`,
                     title: `Episode ${number}`,
@@ -270,18 +274,22 @@ class Provider {
         return episodes.sort((a, b) => a.number - b.number)
     }
 
-    private _toEpisodeDetails(animeId: string, ep: ReAnimeEpisode): EpisodeDetails | null {
+    private _toEpisodeDetails(animeId: string, ep: ReAnimeEpisode, anilistId?: number): EpisodeDetails | null {
         const number = Number(ep.episode_number ?? ep.number)
         if (!Number.isFinite(number) || number <= 0 || !Number.isInteger(number)) return null
 
         const title = ep.title || ep.titles?.find(Boolean) || `Episode ${number}`
 
         return {
-            id: `${animeId}|${number}`,
+            id: this._episodeId(animeId, number, anilistId),
             number,
             url: `${this.baseUrl}/watch/${animeId}?ep=${number}`,
             title,
         }
+    }
+
+    private _episodeId(animeId: string, number: number, anilistId?: number): string {
+        return anilistId ? `${animeId}|${number}|${anilistId}` : `${animeId}|${number}`
     }
 
     private _dedupeEpisodes(episodes: EpisodeDetails[]): EpisodeDetails[] {
@@ -293,23 +301,23 @@ class Provider {
     }
 
     async findEpisodeServer(episode: EpisodeDetails, server: string): Promise<EpisodeServer> {
-        const { animeId, number } = this._parseEpisodeId(episode)
+        const { animeId, number, anilistId } = this._parseEpisodeId(episode)
         const cacheKey = `${animeId}|${number}`
 
-        let watch = this._watchCache.get(cacheKey)
-        if (!watch) {
-            watch = await this._json<ReAnimeWatchResponse>(
-                `${this.baseUrl}/api/watch/${encodeURIComponent(animeId)}/${number}?tz=UTC`,
-            ) || undefined
+        let candidateLinks = await this._findFlixServers(animeId, number, anilistId)
 
-            if (watch) this._watchCache.set(cacheKey, watch)
-        }
-
-        if (watch?.anime) this._rememberAnimeIdentity(animeId, watch.anime)
-
-        let candidateLinks = watch?.episode_links || []
         if (candidateLinks.length === 0) {
-            candidateLinks = await this._findFlixServers(animeId, number)
+            let watch = this._watchCache.get(cacheKey)
+            if (!watch) {
+                watch = await this._json<ReAnimeWatchResponse>(
+                    `${this.baseUrl}/api/watch/${encodeURIComponent(animeId)}/${number}?tz=UTC`,
+                ) || undefined
+
+                if (watch) this._watchCache.set(cacheKey, watch)
+            }
+
+            if (watch?.anime) this._rememberAnimeIdentity(animeId, watch.anime)
+            candidateLinks = watch?.episode_links || []
         }
 
         const links = this._selectLinks(candidateLinks, server)
@@ -333,10 +341,15 @@ class Provider {
         }
     }
 
-    private _parseEpisodeId(episode: EpisodeDetails): { animeId: string; number: number } {
-        const [animeId, rawNumber] = episode.id.split("|")
+    private _parseEpisodeId(episode: EpisodeDetails): { animeId: string; number: number; anilistId?: number } {
+        const [animeId, rawNumber, rawAnilistId] = episode.id.split("|")
         if (animeId && rawNumber) {
-            return { animeId, number: Number(rawNumber) || episode.number }
+            const anilistId = Number(rawAnilistId)
+            return {
+                animeId,
+                number: Number(rawNumber) || episode.number,
+                anilistId: Number.isFinite(anilistId) && anilistId > 0 ? anilistId : undefined,
+            }
         }
 
         const urlMatch = episode.url.match(/\/watch\/([^/?#]+).*?[?&]ep=(\d+)/)
@@ -347,8 +360,8 @@ class Provider {
         return { animeId: animeId || episode.id, number: episode.number }
     }
 
-    private async _findFlixServers(animeId: string, number: number): Promise<ReAnimeEpisodeLink[]> {
-        const anilistId = await this._getAnilistId(animeId)
+    private async _findFlixServers(animeId: string, number: number, knownAnilistId?: number): Promise<ReAnimeEpisodeLink[]> {
+        const anilistId = knownAnilistId || (await this._getAnilistId(animeId))
         if (!anilistId) return []
 
         const data = await this._json<ReAnimeFlixResponse>(
