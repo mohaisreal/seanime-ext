@@ -122,7 +122,9 @@ class Provider {
             // single logical server and choose the best Re:ANIME source inside it;
             // otherwise Flixcloud decryption is repeated several times per click.
             episodeServers: ["default"],
-            supportsDub: true,
+            // Flixcloud exposes dub as an HLS audio track. Keep the Seanime-level
+            // "Switch to dub" disabled and let the player handle audio tracks.
+            supportsDub: false,
         }
     }
 
@@ -412,17 +414,29 @@ class Provider {
             : byServer
 
         const fallback = selected.length > 0 ? selected : usable
-        const sorted = fallback.sort((a, b) => this._languageRank(a.dataType) - this._languageRank(b.dataType))
+        const serverScore = (name: string): number => {
+            const index = preferredServers.indexOf(name.toLowerCase())
+            return index === -1 ? preferredServers.length : index
+        }
+        const sorted = fallback.sort((a, b) => {
+            const serverRank = serverScore(a.serverName!) - serverScore(b.serverName!)
+            if (serverRank !== 0) return serverRank
+            return this._languageRank(a.dataType) - this._languageRank(b.dataType)
+        })
 
-        // Return one sub and one dub source when available. Seanime can then expose
-        // both without needing a second API call.
+        // Re:ANIME often returns the same Flixcloud URL twice: one "sub" entry and
+        // one "dub" entry. That is not two videos; the master HLS carries audio
+        // tracks. Return each player URL once so subtitles/audio stay in one source.
         const picked: ReAnimeEpisodeLink[] = []
+        const seenUrls = new Set<string>()
         for (const link of sorted) {
-            const language = this._languageLabel(link.dataType)
-            if (!picked.some(item => this._languageLabel(item.dataType) === language)) picked.push(link)
+            const normalizedUrl = this._absoluteUrl(link.dataLink || "")
+            if (seenUrls.has(normalizedUrl)) continue
+            seenUrls.add(normalizedUrl)
+            picked.push(link)
         }
 
-        return picked.length > 0 ? picked : sorted.slice(0, 2)
+        return picked.length > 0 ? picked : sorted.slice(0, 1)
     }
 
     private _languageRank(dataType?: string): number {
@@ -451,11 +465,16 @@ class Provider {
 
         const resolved = await this._resolveSource(normalizedUrl)
         const sourceUrl = resolved?.url || normalizedUrl
+        const isDualAudio = resolved?.audioType === "dual"
+        const sourceLabel = isDualAudio ? "Dual Audio" : language
+        const sourceQuality = isDualAudio
+            ? `${link.serverName || "Re:ANIME"} - Dual Audio`
+            : quality
         const source: VideoSource = {
             url: sourceUrl,
             type: this._videoType(sourceUrl),
-            quality,
-            label: language,
+            quality: sourceQuality,
+            label: sourceLabel,
             subtitles: resolved?.subtitles || [],
         }
 
