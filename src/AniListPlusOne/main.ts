@@ -14,68 +14,68 @@ interface ResolvedAnimeEntry {
   exists: boolean;
 }
 
-const BUTTON_STYLE: Record<string, string> = {
-  minWidth: "40px",
-  width: "40px",
-  height: "40px",
-  padding: "0",
-  paddingInlineStart: "0",
-  paddingInlineEnd: "0",
-  fontWeight: "800",
-  letterSpacing: "-0.04em",
-};
-
-function asNumber(value: unknown, fallback = 0): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function getCollectionEntry(mediaId: number): AnimeListEntry | undefined {
-  const collection = $anilist.getAnimeCollection(true);
-
-  for (const list of collection?.MediaListCollection?.lists || []) {
-    for (const entry of list?.entries || []) {
-      if (entry?.media?.id === mediaId) return entry;
-    }
-  }
-
-  return undefined;
-}
-
-function clampProgress(progress: number, totalEpisodes: number): number {
-  if (totalEpisodes <= 0) return progress;
-  return Math.min(progress, totalEpisodes);
-}
-
-function parseDateToFuzzy(value?: string): $app.AL_FuzzyDateInput | undefined {
-  if (!value || typeof value !== "string") return undefined;
-
-  const [year, month, day] = value.split("-").map((part) => asNumber(part, 0));
-  if (!year) return undefined;
-
-  return {
-    year,
-    month: month || undefined,
-    day: day || undefined,
-  };
-}
-
-function todayFuzzyDate(): $app.AL_FuzzyDateInput {
-  const now = new Date();
-
-  return {
-    year: now.getFullYear(),
-    month: now.getMonth() + 1,
-    day: now.getDate(),
-  };
-}
-
-function wait(ctx: any, ms: number): Promise<void> {
-  return new Promise((resolve) => ctx.setTimeout(resolve, ms));
-}
-
 function init() {
   $ui.register((ctx) => {
+    const BUTTON_STYLE: Record<string, string> = {
+      minWidth: "40px",
+      width: "40px",
+      height: "40px",
+      padding: "0",
+      paddingInlineStart: "0",
+      paddingInlineEnd: "0",
+      fontWeight: "800",
+      letterSpacing: "-0.04em",
+    };
+
+    function asNumber(value: unknown, fallback = 0): number {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    }
+
+    function getCollectionEntry(mediaId: number): AnimeListEntry | undefined {
+      const collection = $anilist.getAnimeCollection(true);
+
+      for (const list of collection?.MediaListCollection?.lists || []) {
+        for (const entry of list?.entries || []) {
+          if (entry?.media?.id === mediaId) return entry;
+        }
+      }
+
+      return undefined;
+    }
+
+    function clampProgress(progress: number, totalEpisodes: number): number {
+      if (totalEpisodes <= 0) return progress;
+      return Math.min(progress, totalEpisodes);
+    }
+
+    function parseDateToFuzzy(value?: string): $app.AL_FuzzyDateInput | undefined {
+      if (!value || typeof value !== "string") return undefined;
+
+      const [year, month, day] = value.split("-").map((part) => asNumber(part, 0));
+      if (!year) return undefined;
+
+      return {
+        year,
+        month: month || undefined,
+        day: day || undefined,
+      };
+    }
+
+    function todayFuzzyDate(): $app.AL_FuzzyDateInput {
+      const now = new Date();
+
+      return {
+        year: now.getFullYear(),
+        month: now.getMonth() + 1,
+        day: now.getDate(),
+      };
+    }
+
+    function wait(ms: number): Promise<void> {
+      return new Promise((resolve) => ctx.setTimeout(resolve, ms));
+    }
+
     let isProcessing = false;
 
     const button = ctx.action.newAnimePageButton({
@@ -127,7 +127,7 @@ function init() {
     }
 
     async function resetButton() {
-      await wait(ctx, 900);
+      await wait(900);
       button.setLabel("+1");
       button.setIntent("gray-subtle");
       button.setTooltipText("Sumar +1 episodio visto");
@@ -191,7 +191,7 @@ function init() {
         }
 
         $anilist.updateEntry(mediaId, nextStatus, entry.score, nextProgress, startedAt, completedAt);
-        await wait(ctx, 500);
+        await wait(500);
         $anilist.refreshAnimeCollection();
 
         button.setLabel("✓");
