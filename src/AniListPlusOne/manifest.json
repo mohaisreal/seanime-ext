@@ -1,0 +1,21 @@
+{
+  "id": "anilist-plus-one",
+  "name": "AniList +1 Episode",
+  "version": "1.0.0",
+  "manifestURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/dev/src/AniListPlusOne/manifest.json",
+  "language": "typescript",
+  "type": "plugin",
+  "description": "Adds a compact anime page button that increments the AniList watched episode progress by one.",
+  "author": "mohaisreal",
+  "icon": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/dev/src/AniListPlusOne/icon.svg",
+  "website": "https://github.com/mohaisreal/seanime-ext",
+  "readme": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/dev/src/AniListPlusOne/README.md",
+  "payloadURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/dev/src/AniListPlusOne/main.ts",
+  "plugin": {
+    "version": "1",
+    "permissions": {
+      "scopes": ["anilist"]
+    }
+  },
+  "isDevelopment": false
+}

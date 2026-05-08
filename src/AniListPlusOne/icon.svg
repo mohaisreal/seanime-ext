@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="AniList plus one episode">
+  <rect width="48" height="48" rx="12" fill="#151515"/>
+  <path d="M15 24h18M24 15v18" stroke="#f4f4f5" stroke-width="4" stroke-linecap="round"/>
+  <text x="24" y="41" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="800" fill="#a1a1aa">EP</text>
+</svg>
