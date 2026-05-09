@@ -244,11 +244,6 @@ class Provider {
         }
 
         episodes = this._dedupeEpisodes(episodes)
-        const availability = await this._getAvailability(id)
-        if (availability && !availability.hasContent) {
-            episodes = this._markEpisodesUnavailable(episodes)
-        }
-
         this._episodeCache.set(id, episodes)
         return episodes
     }
@@ -331,20 +326,13 @@ class Provider {
         return [...byNumber.values()].sort((a, b) => a.number - b.number)
     }
 
-    private _markEpisodesUnavailable(episodes: EpisodeDetails[]): EpisodeDetails[] {
-        return episodes.map(episode => ({
-            ...episode,
-            title: UNAVAILABLE_PROVIDER_MESSAGE,
-        }))
-    }
-
     async findEpisodeServer(episode: EpisodeDetails, server: string): Promise<EpisodeServer> {
         const { animeId, number, anilistId } = this._parseEpisodeId(episode)
         const cacheKey = `${animeId}|${number}`
 
         const availability = await this._getAvailability(animeId)
         if (availability && !availability.hasContent) {
-            return this._unavailableEpisodeServer(server)
+            throw new Error(UNAVAILABLE_PROVIDER_MESSAGE)
         }
 
         let candidateLinks = await this._findFlixServers(animeId, number, anilistId)
@@ -474,14 +462,6 @@ class Provider {
 
         this._availabilityCache.set(requestedId, availability)
         if (anime?.anime_id) this._availabilityCache.set(anime.anime_id, availability)
-    }
-
-    private _unavailableEpisodeServer(server: string): EpisodeServer {
-        return {
-            server: server && server !== "default" ? server : "Not available",
-            headers: {},
-            videoSources: [],
-        }
     }
 
     private _selectLinks(links: ReAnimeEpisodeLink[], server: string): ReAnimeEpisodeLink[] {
