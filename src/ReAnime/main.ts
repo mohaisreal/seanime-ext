@@ -111,6 +111,8 @@ type ReAnimeAvailability = {
     dubbed: number
 }
 
+const UNAVAILABLE_PROVIDER_MESSAGE = "This anime is not available on the provider you're using. Please use another provider."
+
 type DecodedDataNode = {
     anime?: ReAnimeAnimeIdentity & {
         title?: ReAnimeTitle
@@ -242,6 +244,11 @@ class Provider {
         }
 
         episodes = this._dedupeEpisodes(episodes)
+        const availability = await this._getAvailability(id)
+        if (availability && !availability.hasContent) {
+            episodes = this._markEpisodesUnavailable(episodes)
+        }
+
         this._episodeCache.set(id, episodes)
         return episodes
     }
@@ -322,6 +329,13 @@ class Provider {
             if (!byNumber.has(episode.number)) byNumber.set(episode.number, episode)
         }
         return [...byNumber.values()].sort((a, b) => a.number - b.number)
+    }
+
+    private _markEpisodesUnavailable(episodes: EpisodeDetails[]): EpisodeDetails[] {
+        return episodes.map(episode => ({
+            ...episode,
+            title: UNAVAILABLE_PROVIDER_MESSAGE,
+        }))
     }
 
     async findEpisodeServer(episode: EpisodeDetails, server: string): Promise<EpisodeServer> {
@@ -464,65 +478,10 @@ class Provider {
 
     private _unavailableEpisodeServer(server: string): EpisodeServer {
         return {
-            server: server || "default",
+            server: server && server !== "default" ? server : "Not available",
             headers: {},
-            videoSources: [{
-                url: this._unavailableHtmlUrl(),
-                type: "unknown",
-                quality: "Not available",
-                label: "Not available",
-                subtitles: [],
-            }],
+            videoSources: [],
         }
-    }
-
-    private _unavailableHtmlUrl(): string {
-        const html = `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    html, body {
-      margin: 0;
-      width: 100%;
-      height: 100%;
-      background: #000;
-      color: #fff;
-      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    body {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      text-align: center;
-    }
-    main {
-      max-width: 720px;
-      padding: 32px;
-    }
-    h1 {
-      margin: 0 0 12px;
-      font-size: 28px;
-      line-height: 1.2;
-    }
-    p {
-      margin: 0;
-      color: #a1a1aa;
-      font-size: 18px;
-      line-height: 1.5;
-    }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>Anime not available</h1>
-    <p>This anime is not available on the provider you're using. Please use another provider.</p>
-  </main>
-</body>
-</html>`
-
-        return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
     }
 
     private _selectLinks(links: ReAnimeEpisodeLink[], server: string): ReAnimeEpisodeLink[] {
