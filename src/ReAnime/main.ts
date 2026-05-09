@@ -20,6 +20,8 @@ type ReAnimeSearchItem = {
     dubbed?: number
     season_year?: number
     can_watch?: boolean
+    can_request?: boolean
+    requested?: boolean
 }
 
 type ReAnimeSearchResponse = {
@@ -101,8 +103,24 @@ type FlixCloudCryptoData = {
     iv: Uint8Array
 }
 
+type ReAnimeAvailability = {
+    hasContent: boolean
+    canWatch?: boolean
+    canRequest?: boolean
+    subbed: number
+    dubbed: number
+}
+
 type DecodedDataNode = {
-    anime?: ReAnimeAnimeIdentity & { title?: ReAnimeTitle; subbed?: number; dubbed?: number; episodes?: number }
+    anime?: ReAnimeAnimeIdentity & {
+        title?: ReAnimeTitle
+        subbed?: number
+        dubbed?: number
+        episodes?: number
+        can_watch?: boolean
+        can_request?: boolean
+        requested?: boolean
+    }
     episodes?: ReAnimeEpisodeListResponse
 }
 
@@ -115,6 +133,7 @@ class Provider {
     private _resolvedLinkCache = new Map<string, VideoSource>()
     private _playerResultCache = new Map<string, CachedResolvedSource>()
     private _anilistIdCache = new Map<string, number>()
+    private _availabilityCache = new Map<string, ReAnimeAvailability>()
 
     getSettings(): Settings {
         return {
@@ -251,6 +270,7 @@ class Provider {
         const root = this._decodeSvelteData(data?.nodes?.[1]?.data) as DecodedDataNode | null
         const canonicalId = root?.anime?.anime_id || id
         this._rememberAnimeIdentity(id, root?.anime)
+        this._rememberAnimeAvailability(id, root?.anime)
         const rawAnilistId = Number(root?.anime?.anilist_id)
         const anilistId = Number.isFinite(rawAnilistId) && rawAnilistId > 0 ? rawAnilistId : undefined
         const rawEpisodes = root?.episodes?.data || []
@@ -307,6 +327,11 @@ class Provider {
     async findEpisodeServer(episode: EpisodeDetails, server: string): Promise<EpisodeServer> {
         const { animeId, number, anilistId } = this._parseEpisodeId(episode)
         const cacheKey = `${animeId}|${number}`
+
+        const availability = await this._getAvailability(animeId)
+        if (availability && !availability.hasContent) {
+            return this._unavailableEpisodeServer(server)
+        }
 
         let candidateLinks = await this._findFlixServers(animeId, number, anilistId)
 
@@ -385,9 +410,26 @@ class Provider {
 
         const root = this._decodeSvelteData(data?.nodes?.[1]?.data) as DecodedDataNode | null
         this._rememberAnimeIdentity(animeId, root?.anime)
+        this._rememberAnimeAvailability(animeId, root?.anime)
 
         return this._anilistIdCache.get(animeId)
             || (root?.anime?.anime_id ? this._anilistIdCache.get(root.anime.anime_id) || null : null)
+    }
+
+    private async _getAvailability(animeId: string): Promise<ReAnimeAvailability | null> {
+        const cached = this._availabilityCache.get(animeId)
+        if (cached) return cached
+
+        const data = await this._json<{ nodes?: { data?: unknown[] }[] }>(
+            `${this.baseUrl}/anime/${encodeURIComponent(animeId)}/__data.json`,
+        )
+
+        const root = this._decodeSvelteData(data?.nodes?.[1]?.data) as DecodedDataNode | null
+        this._rememberAnimeIdentity(animeId, root?.anime)
+        this._rememberAnimeAvailability(animeId, root?.anime)
+
+        return this._availabilityCache.get(animeId)
+            || (root?.anime?.anime_id ? this._availabilityCache.get(root.anime.anime_id) || null : null)
     }
 
     private _rememberAnimeIdentity(requestedId: string, anime?: ReAnimeAnimeIdentity): void {
@@ -396,6 +438,91 @@ class Provider {
 
         this._anilistIdCache.set(requestedId, anilistId)
         if (anime?.anime_id) this._anilistIdCache.set(anime.anime_id, anilistId)
+    }
+
+    private _rememberAnimeAvailability(
+        requestedId: string,
+        anime?: ReAnimeAnimeIdentity & { subbed?: number; dubbed?: number; can_watch?: boolean; can_request?: boolean },
+    ): void {
+        if (!anime) return
+
+        const rawSubbed = Number(anime.subbed || 0)
+        const rawDubbed = Number(anime.dubbed || 0)
+        const subbed = Number.isFinite(rawSubbed) ? rawSubbed : 0
+        const dubbed = Number.isFinite(rawDubbed) ? rawDubbed : 0
+        const availability: ReAnimeAvailability = {
+            hasContent: subbed + dubbed > 0,
+            canWatch: anime?.can_watch,
+            canRequest: anime?.can_request,
+            subbed,
+            dubbed,
+        }
+
+        this._availabilityCache.set(requestedId, availability)
+        if (anime?.anime_id) this._availabilityCache.set(anime.anime_id, availability)
+    }
+
+    private _unavailableEpisodeServer(server: string): EpisodeServer {
+        return {
+            server: server || "default",
+            headers: {},
+            videoSources: [{
+                url: this._unavailableHtmlUrl(),
+                type: "unknown",
+                quality: "Not available",
+                label: "Not available",
+                subtitles: [],
+            }],
+        }
+    }
+
+    private _unavailableHtmlUrl(): string {
+        const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      background: #000;
+      color: #fff;
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+    }
+    main {
+      max-width: 720px;
+      padding: 32px;
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: 28px;
+      line-height: 1.2;
+    }
+    p {
+      margin: 0;
+      color: #a1a1aa;
+      font-size: 18px;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Anime not available</h1>
+    <p>This anime is not available on the provider you're using. Please use another provider.</p>
+  </main>
+</body>
+</html>`
+
+        return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
     }
 
     private _selectLinks(links: ReAnimeEpisodeLink[], server: string): ReAnimeEpisodeLink[] {
