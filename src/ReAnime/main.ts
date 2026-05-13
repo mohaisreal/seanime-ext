@@ -112,6 +112,7 @@ type ReAnimeAvailability = {
 }
 
 const UNAVAILABLE_PROVIDER_MESSAGE = "This anime is not available on the provider you're using. Please use another provider."
+const UNRESOLVED_STREAM_MESSAGE = "Re:ANIME returned servers, but none could be resolved. Please try again or use another provider."
 
 type DecodedDataNode = {
     anime?: ReAnimeAnimeIdentity & {
@@ -352,11 +353,19 @@ class Provider {
         }
 
         const links = this._selectLinks(candidateLinks, server)
+        if (links.length === 0) {
+            throw new Error(UNRESOLVED_STREAM_MESSAGE)
+        }
+
         const videoSources: VideoSource[] = []
 
         for (const link of links) {
             const source = await this._toVideoSource(link)
             if (source) videoSources.push(source)
+        }
+
+        if (videoSources.length === 0) {
+            throw new Error(UNRESOLVED_STREAM_MESSAGE)
         }
 
         const selectedServer = links[0]?.serverName || (server === "default" ? "HD-2" : server)
@@ -521,15 +530,18 @@ class Provider {
         if (!link.dataLink) return null
 
         const normalizedUrl = this._absoluteUrl(link.dataLink)
+        const isFlixCloud = this._originOf(normalizedUrl).includes("flixcloud.cc")
         const language = this._languageLabel(link.dataType)
         const quality = `${link.serverName || "Re:ANIME"} - ${language}${link.softsub ? " Softsub" : ""}`
         const cacheKey = `${normalizedUrl}|${quality}`
-        const canCacheVideoSource = !this._originOf(normalizedUrl).includes("flixcloud.cc")
+        const canCacheVideoSource = !isFlixCloud
 
         const cached = canCacheVideoSource ? this._resolvedLinkCache.get(cacheKey) : undefined
         if (cached) return cached
 
         const resolved = await this._resolveSource(normalizedUrl)
+        if (isFlixCloud && !resolved) return null
+
         const sourceUrl = resolved?.url || normalizedUrl
         const isDualAudio = resolved?.audioType === "dual"
         const sourceLabel = isDualAudio ? "Dual Audio" : language
@@ -551,7 +563,8 @@ class Provider {
     private async _resolveSource(playerUrl: string): Promise<ResolvedSource | null> {
         if (this._videoType(playerUrl) !== "unknown") return { url: playerUrl, subtitles: [] }
 
-        const cached = this._playerResultCache.get(playerUrl)
+        const isFlixCloud = this._originOf(playerUrl).includes("flixcloud.cc")
+        const cached = isFlixCloud ? undefined : this._playerResultCache.get(playerUrl)
         if (cached && cached.expiresAt > Date.now()) return cached.source
         if (cached) this._playerResultCache.delete(playerUrl)
 
@@ -574,12 +587,12 @@ class Provider {
                 const direct = this._extractDirectUrlFromHtml(body)
                 if (direct) {
                     resolved = { url: direct, subtitles: [] }
-                } else if (this._originOf(playerUrl).includes("flixcloud.cc")) {
+                } else if (isFlixCloud) {
                     resolved = await this._decryptFlixCloudSource(playerUrl, body)
                 }
             }
 
-            if (resolved) {
+            if (resolved && !isFlixCloud) {
                 this._playerResultCache.set(playerUrl, {
                     source: resolved,
                     expiresAt: Date.now() + 120000,
