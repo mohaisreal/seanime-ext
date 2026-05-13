@@ -112,7 +112,7 @@ type ReAnimeAvailability = {
 }
 
 const UNAVAILABLE_PROVIDER_MESSAGE = "This anime is not available on the provider you're using. Please use another provider."
-const UNRESOLVED_STREAM_MESSAGE = "Re:ANIME returned servers, but none could be resolved. Please try again or use another provider."
+const UNRESOLVED_STREAM_MESSAGE = "Re:ANIME returned servers, but Flixcloud blocked the stream. Please try again or use another provider."
 
 type DecodedDataNode = {
     anime?: ReAnimeAnimeIdentity & {
@@ -656,12 +656,37 @@ class Provider {
         const aesKey = this._sha256Bytes(derived)
         const directUrl = await this._aesCbcDecryptToString(encryptedUrl, aesKey, cryptoData.iv)
         if (!directUrl || this._videoType(directUrl) === "unknown") return null
+        const cleanDirectUrl = this._cleanUrl(directUrl)
+        if (this._videoType(cleanDirectUrl) === "m3u8") {
+            const isPlayable = await this._isPlayableHls(cleanDirectUrl, playerUrl)
+            if (!isPlayable) return null
+        }
 
         return {
-            url: this._cleanUrl(directUrl),
+            url: cleanDirectUrl,
             subtitles: this._extractFlixCloudSubtitles(html),
             audioType: this._extractJsStringField(html, "audio_type") || undefined,
             defaultAudioTrack: this._extractJsNumberField(html, "default_audio_track"),
+        }
+    }
+
+    private async _isPlayableHls(url: string, referer: string): Promise<boolean> {
+        try {
+            const res = await fetch(url, {
+                credentials: "include",
+                headers: {
+                    "Accept": "application/vnd.apple.mpegurl,application/x-mpegURL,text/plain,*/*",
+                    "Origin": this._originOf(referer),
+                    "Referer": referer,
+                    "User-Agent": "Mozilla/5.0",
+                },
+            })
+
+            if (!res.ok) return false
+            const body = await res.text()
+            return body.trimStart().startsWith("#EXTM3U")
+        } catch {
+            return false
         }
     }
 
