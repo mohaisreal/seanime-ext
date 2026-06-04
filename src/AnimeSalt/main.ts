@@ -42,16 +42,35 @@ class Provider {
             if (!hrefMatch || !titleMatch) continue
 
             const url = this._normalizeUrl(hrefMatch[1])
-            const id = this._withMode(
-                this._idFromUrl(url),
-                opts.dub ? "dub" : "sub",
-                opts.media.episodeCount,
-                this._inferSeasonNumber(opts),
-                this._inferPartNumber(opts),
-            )
             const title = this._stripTags(titleMatch[1])
-            if (!id || !title || seen.has(id)) continue
+            if (!title) continue
 
+            const seasonNumber = this._inferSeasonNumber(opts)
+            const partNumber = this._inferPartNumber(opts)
+            const seasons = url.includes("/series/")
+                ? await this._fetchSeriesSeasons(url)
+                : []
+            const searchSeasons = seasonNumber
+                ? seasons.filter(season => season.season === seasonNumber)
+                : seasons
+
+            if (searchSeasons.length > 0) {
+                for (const season of searchSeasons) {
+                    const id = this._withMode(this._idFromUrl(url), opts.dub ? "dub" : "sub", opts.media?.episodeCount, season.season, partNumber)
+                    if (!id || seen.has(id)) continue
+                    seen.add(id)
+                    results.push({
+                        id,
+                        title: `${title} - Season ${season.season}`,
+                        url,
+                        subOrDub: opts.dub ? "dub" : "sub",
+                    })
+                }
+                continue
+            }
+
+            const id = this._withMode(this._idFromUrl(url), opts.dub ? "dub" : "sub", opts.media?.episodeCount, seasonNumber, partNumber)
+            if (!id || seen.has(id)) continue
             seen.add(id)
             results.push({ id, title, url, subOrDub: opts.dub ? "dub" : "sub" })
         }
@@ -78,16 +97,7 @@ class Provider {
 
         const episodeMap = new Map<number, EpisodeDetails>()
         const slug = contentId.replace(/^series\//, "").replace(/\/+$/g, "")
-        const seasons: { season: number; start: number; end: number }[] = []
-        const seasonPattern = /Season\s*(\d+)\s*(?:•|&bull;|&#8226;)\s*(\d+)\s*-\s*(\d+)/gi
-        let seasonMatch: RegExpExecArray | null
-
-        while ((seasonMatch = seasonPattern.exec(html)) !== null) {
-            const season = parseInt(seasonMatch[1])
-            const start = parseInt(seasonMatch[2])
-            const end = parseInt(seasonMatch[3])
-            if (season && start && end && end >= start) seasons.push({ season, start, end })
-        }
+        const seasons = this._extractSeasons(html)
 
         // The AnimeSalt series page can contain several Anime seasons on one page,
         // while Seanime asks for one AniList entry at a time. Prefer the explicit
@@ -386,12 +396,33 @@ class Provider {
         return subtitles
     }
 
+    private async _fetchSeriesSeasons(url: string): Promise<{ season: number; start: number; end: number }[]> {
+        const res = await fetch(url, { credentials: "include", headers: this._siteHeaders() })
+        if (!res.ok) return []
+        return this._extractSeasons(await res.text())
+    }
+
+    private _extractSeasons(html: string): { season: number; start: number; end: number }[] {
+        const seasons: { season: number; start: number; end: number }[] = []
+        const seasonPattern = /Season\s*(\d+)\s*(?:•|&bull;|&#8226;)\s*(\d+)\s*-\s*(\d+)/gi
+        let seasonMatch: RegExpExecArray | null
+
+        while ((seasonMatch = seasonPattern.exec(html)) !== null) {
+            const season = parseInt(seasonMatch[1])
+            const start = parseInt(seasonMatch[2])
+            const end = parseInt(seasonMatch[3])
+            if (season && start && end && end >= start) seasons.push({ season, start, end })
+        }
+
+        return seasons
+    }
+
     private _inferSeasonNumber(opts: SearchOptions): number | undefined {
         const values = [
             opts.query,
-            opts.media.englishTitle || "",
-            opts.media.romajiTitle || "",
-            ...(opts.media.synonyms || []),
+            opts.media?.englishTitle || "",
+            opts.media?.romajiTitle || "",
+            ...(opts.media?.synonyms || []),
         ]
 
         for (const value of values) {
@@ -409,9 +440,9 @@ class Provider {
     private _inferPartNumber(opts: SearchOptions): number | undefined {
         const values = [
             opts.query,
-            opts.media.englishTitle || "",
-            opts.media.romajiTitle || "",
-            ...(opts.media.synonyms || []),
+            opts.media?.englishTitle || "",
+            opts.media?.romajiTitle || "",
+            ...(opts.media?.synonyms || []),
         ]
 
         for (const value of values) {
