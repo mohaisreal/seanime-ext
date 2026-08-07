@@ -1,0 +1,13 @@
+{
+  "id": "leermangaesp",
+  "name": "MangaLect",
+  "version": "2.0.0",
+  "manifestURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/LeerMangaEsp/manifest.json",
+  "language": "typescript",
+  "type": "manga-provider",
+  "description": "Proveedor de manga en español para MangaLect.",
+  "author": "mohaisreal",
+  "icon": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/LeerMangaEsp/icon.png",
+  "lang": "es",
+  "payloadURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/LeerMangaEsp/main.ts"
+}
