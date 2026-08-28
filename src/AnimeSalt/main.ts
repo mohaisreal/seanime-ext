@@ -13,7 +13,7 @@ type AnimeSaltMode = "sub" | "dub"
 
 class Provider {
 
-    baseUrl = "https://animesalt.me/"
+    baseUrl = "https://animesalt.cx/"
 
     getSettings(): Settings {
         return {
@@ -37,7 +37,7 @@ class Provider {
 
         while ((articleMatch = articlePattern.exec(html)) !== null) {
             const article = articleMatch[0]
-            const hrefMatch = article.match(/<a[^>]+href=["'](https?:\/\/animesalt\.link\/(?:series|movies)\/[^"']+)["'][^>]*>/i)
+            const hrefMatch = article.match(/<a[^>]+href=["'](https?:\/\/animesalt\.cx\/(?:series|movies)\/[^"']+)["'][^>]*>/i)
             const titleMatch = article.match(/<h2[^>]*class=["'][^"']*entry-title[^"']*["'][^>]*>([\s\S]*?)<\/h2>/i)
             if (!hrefMatch || !titleMatch) continue
 
@@ -139,7 +139,7 @@ class Provider {
 
         // Prefer explicit episode URLs rendered by AnimeSalt; fill gaps from the
         // season range selector afterwards.
-        const pattern = /href=["'](https?:\/\/animesalt\.link\/episode\/([^"']+?)-(\d+)x(\d+)\/)["']/gi
+        const pattern = /href=["'](https?:\/\/animesalt\.cx\/episode\/([^"']+?)-(\d+)x(\d+)\/)["']/gi
         let match: RegExpExecArray | null
 
         while ((match = pattern.exec(html)) !== null) {
