@@ -54,20 +54,15 @@ class Provider {
     }
 
     /**
-     * Fetches all episodes via JKAnime's AJAX pagination endpoint.
-     *
-     * JKAnime renders episode lists client-side, so the static HTML only contains
-     * the latest episode. All episodes are available through:
-     *   /ajax/pagination_episodes/{idserie}/{page}/  (10 episodes per page, JSON)
-     *
-     * The numeric `idserie` is embedded in the series page HTML.
-     * Falls back to static HTML scraping if the AJAX path fails or returns empty.
+     * Fetches published episodes from the paginated AJAX API. The current API
+     * requires POST, the page's CSRF token and its matching session cookies.
+     * Retains the legacy parser for pages using the previous layout.
      */
     async findEpisodes(id: string): Promise<EpisodeDetails[]> {
         const url = `${this.baseUrl}/${id}/`
 
         const res = await fetch(url, { credentials: "include" })
-        if (!res.ok) return []
+        if (!res.ok) throw new Error(`JKAnime: failed to load series ${id} (HTTP ${res.status})`)
 
         const html = await res.text()
 
@@ -75,7 +70,7 @@ class Provider {
         const seen = new Set<number>()
 
         const addEp = (number: number, epId?: string, title?: string) => {
-            if (!number || seen.has(number)) return
+            if (!Number.isFinite(number) || number <= 0 || seen.has(number)) return
             seen.add(number)
             episodes.push({
                 id: epId ?? `${id}/${number}`,
@@ -85,7 +80,63 @@ class Provider {
             })
         }
 
-        // --- AJAX pagination ---
+        // Laravel pagination returns { data, last_page, per_page, total }.
+        // The visible "Episodios" count can be 0 for a series already airing.
+        const currentApiMatch = html.match(/ajax\/episodes\/(\d+)\//)
+        if (currentApiMatch) {
+            const tokenMatch = html.match(/<meta\b[^>]*name=["']csrf-token["'][^>]*content=["']([^"']+)["']/i)
+            if (!tokenMatch) throw new Error(`JKAnime: missing CSRF token for ${id}`)
+
+            // Seanime exposes cookies as a record; credentials alone does not
+            // forward the session obtained with the series page.
+            const cookies = (res as { cookies?: Record<string, string> }).cookies ?? {}
+            const headers: Record<string, string> = {
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": url,
+                "Origin": this.baseUrl,
+            }
+            const cookieHeader = Object.entries(cookies).map(([name, value]) => `${name}=${value}`).join("; ")
+            if (cookieHeader) headers["Cookie"] = cookieHeader
+
+            const fetchPage = async (page: number) => {
+                const response = await fetch(`${this.baseUrl}/ajax/episodes/${currentApiMatch[1]}/${page}`, {
+                    method: "POST",
+                    headers,
+                    body: `_token=${encodeURIComponent(tokenMatch[1])}`,
+                })
+                if (!response.ok) {
+                    throw new Error(`JKAnime: episode page ${page} failed (HTTP ${response.status})`)
+                }
+                const data = await response.json()
+                if (!data || !Array.isArray(data.data)) {
+                    throw new Error(`JKAnime: invalid episode response on page ${page}`)
+                }
+                return data
+            }
+
+            const addPage = (page: { data: { number: number | string, title?: string }[] }) => {
+                for (const ep of page.data) addEp(Number(ep.number), undefined, ep.title)
+            }
+            const firstPage = await fetchPage(1)
+            addPage(firstPage)
+            const pageCount = Number(firstPage.last_page) ||
+                Math.ceil(Number(firstPage.total) / Number(firstPage.per_page)) || 1
+            // Bound concurrent requests for large catalogs such as One Piece.
+            for (let start = 2; start <= pageCount; start += 4) {
+                const requests = []
+                for (let page = start; page < start + 4 && page <= pageCount; page++) {
+                    requests.push(fetchPage(page))
+                }
+                const pages = await Promise.all(requests)
+                for (const page of pages) addPage(page)
+            }
+            // Use only published episodes; metadata may include future episodes
+            // and numbering gaps may be intentional.
+            return episodes.sort((a, b) => a.number - b.number)
+        }
+
+        // --- Legacy AJAX pagination ---
         const seriesIdMatch = html.match(/ajax\/pagination_episodes\/(\d+)\//)
         if (seriesIdMatch) {
             const seriesId = seriesIdMatch[1]
