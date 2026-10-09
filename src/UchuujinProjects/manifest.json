@@ -1,0 +1,13 @@
+{
+  "id": "uchuujin-projects",
+  "name": "Uchuujin Projects",
+  "version": "1.0.2",
+  "manifestURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/UchuujinProjects/manifest.json",
+  "language": "typescript",
+  "type": "manga-provider",
+  "description": "Read Spanish manga and Asian comics from Uchuujin Projects right in Seanime.",
+  "author": "branrgx & mohaisreal",
+  "icon": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/UchuujinProjects/icon.png",
+  "lang": "es",
+  "payloadURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/UchuujinProjects/main.ts"
+}
