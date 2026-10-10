@@ -1,0 +1,14 @@
+{
+  "id": "mangaunion",
+  "name": "MangaUnion",
+  "version": "1.0.0",
+  "manifestURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/MangaUnion/manifest.json",
+  "language": "typescript",
+  "type": "manga-provider",
+  "description": "Manga, manhwa y manhua en italiano de MangaUnion. Descifrado integrado para lectura; los capítulos cifrados no admiten descargas con el descargador de Seanime.",
+  "author": "mohaisreal",
+  "icon": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/MangaUnion/icon.png",
+  "lang": "it",
+  "payloadURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/MangaUnion/main.ts",
+  "readme": "https://github.com/mohaisreal/seanime-ext/blob/main/src/MangaUnion/README.md"
+}
