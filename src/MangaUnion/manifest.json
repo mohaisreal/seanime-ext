@@ -5,7 +5,7 @@
   "manifestURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/MangaUnion/manifest.json",
   "language": "typescript",
   "type": "manga-provider",
-  "description": "Manga, manhwa y manhua en italiano de MangaUnion. Descifrado integrado para lectura; los capítulos cifrados no admiten descargas con el descargador de Seanime.",
+  "description": "Manga, manhwa y manhua en italiano de MangaUnion.",
   "author": "mohaisreal",
   "icon": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/MangaUnion/icon.png",
   "lang": "it",
