@@ -13,7 +13,7 @@ type AnimeSaltMode = "sub" | "dub"
 
 class Provider {
 
-    baseUrl = "https://animesalt.cx/"
+    baseUrl = "https://animesalt.cx"
 
     getSettings(): Settings {
         return {
@@ -44,6 +44,14 @@ class Provider {
             const url = this._normalizeUrl(hrefMatch[1])
             const title = this._stripTags(titleMatch[1])
             if (!title) continue
+
+            // Search pages put related movies before the TV series (e.g. JJK 0).
+            // Keep Seanime's automatic match within the requested media format.
+            const isMovie = url.includes("/movies/")
+            const format = opts.media?.format?.toUpperCase()
+            if (format === "MOVIE" && !isMovie) continue
+            if (isMovie && (format === "TV" || format === "TV_SHORT" ||
+                (format !== "MOVIE" && (opts.media?.episodeCount || 0) > 1))) continue
 
             const seasonNumber = this._inferSeasonNumber(opts)
             const partNumber = this._inferPartNumber(opts)
@@ -87,10 +95,11 @@ class Provider {
         const html = await res.text()
 
         if (contentId.startsWith("movies/")) {
+            const movieUrl = this._normalizeUrl(res.url || url)
             return [{
-                id: this._episodeId(res.url, mode),
+                id: this._episodeId(movieUrl, mode),
                 number: 1,
-                url: res.url,
+                url: movieUrl,
                 title: this._pageTitle(html) || "Movie",
             }]
         }
@@ -159,22 +168,28 @@ class Provider {
 
     async findEpisodeServer(episode: EpisodeDetails, server: string): Promise<EpisodeServer> {
         const mode = this._episodeMode(episode)
-        const res = await fetch(episode.url, { credentials: "include", headers: this._siteHeaders() })
-        if (!res.ok) return { server, headers: {}, videoSources: [] }
+        const episodeUrl = this._normalizeUrl(episode.url)
+        const res = await fetch(episodeUrl, { credentials: "include", headers: this._siteHeaders() })
+        if (!res.ok) throw new Error(`AnimeSalt: failed to load episode (HTTP ${res.status}): ${episodeUrl}`)
 
         const html = await res.text()
         const candidates = this._orderedCandidates(this._extractIframeUrls(html), mode)
 
+        const errors: string[] = []
         for (const playerUrl of candidates) {
-            const source = await this._resolvePlayer(playerUrl, episode.url, mode)
-            if (source.videoSources.length > 0) return source
+            try {
+                const source = await this._resolvePlayer(playerUrl, episodeUrl, mode)
+                if (source.videoSources.length > 0) return { ...source, server }
+            } catch (error) {
+                errors.push(String(error))
+            }
         }
 
-        return { server, headers: {}, videoSources: [] }
+        throw new Error(`AnimeSalt: no video sources for ${episodeUrl} (${candidates.length} supported players)${errors.length ? `: ${errors.join("; ")}` : ""}`)
     }
 
     private _orderedCandidates(urls: string[], mode: AnimeSaltMode): string[] {
-        const asCdn = urls.filter(url => /https?:\/\/as-cdn\d+\.top\/video\//i.test(url))
+        const asCdn = urls.filter(url => this._isAsCdnPlayer(url))
         const megaPlay = urls.filter(url => /https?:\/\/megaplay\.buzz\/stream\//i.test(url))
         const exactMegaPlay = megaPlay.filter(url => new RegExp(`/${mode}(?:[/?#]|$)`, "i").test(url))
         const otherMegaPlay = megaPlay.filter(url => !exactMegaPlay.includes(url))
@@ -189,8 +204,13 @@ class Provider {
 
     private async _resolvePlayer(playerUrl: string, episodeUrl: string, mode: AnimeSaltMode): Promise<EpisodeServer> {
         if (/megaplay\.buzz\/stream\//i.test(playerUrl)) return this._resolveMegaPlay(playerUrl, mode)
-        if (/as-cdn\d+\.top\/video\//i.test(playerUrl)) return this._resolveAsCdn(playerUrl, episodeUrl, mode)
+        if (this._isAsCdnPlayer(playerUrl)) return this._resolveAsCdn(playerUrl, episodeUrl, mode)
         return { server: "unknown", headers: {}, videoSources: [] }
+    }
+
+    private _isAsCdnPlayer(url: string): boolean {
+        // Ravok is the current AS CDN embed host and uses the same getVideo API.
+        return /^https?:\/\/(?:as-cdn\d+\.top|ravok\.buzz)\/video\//i.test(url)
     }
 
     private async _resolveAsCdn(playerUrl: string, episodeUrl: string, mode: AnimeSaltMode): Promise<EpisodeServer> {
@@ -364,14 +384,19 @@ class Provider {
     private _extractIframeUrls(html: string): string[] {
         const urls: string[] = []
         const seen = new Set<string>()
-        const pattern = /<iframe\b[^>]*(?:src|data-src)=["']([^"']+)["'][^>]*>/gi
+        const pattern = /<iframe\b[^>]*>/gi
         let match: RegExpExecArray | null
 
         while ((match = pattern.exec(html)) !== null) {
-            const url = this._absoluteUrl(this._htmlDecode(match[1]))
-            if (!/^https?:\/\//i.test(url) || seen.has(url)) continue
-            seen.add(url)
-            urls.push(url)
+            // Lazy-loaded iframes can also carry an empty/placeholder src.
+            for (const attribute of ["data-src", "src"]) {
+                const value = match[0].match(new RegExp(`\\s${attribute}\\s*=\\s*["']([^"']+)["']`, "i"))?.[1]
+                if (!value) continue
+                const url = this._absoluteUrl(this._htmlDecode(value))
+                if (!/^https?:\/\//i.test(url) || seen.has(url)) continue
+                seen.add(url)
+                urls.push(url)
+            }
         }
 
         return urls
@@ -506,20 +531,20 @@ class Provider {
         try {
             return new URL(this._cleanUrl(url), this.baseUrl).toString()
         } catch {
-            return this._cleanUrl(url)
+            const clean = this._cleanUrl(url)
+            if (clean.startsWith("//")) return `https:${clean}`
+            if (clean.startsWith("/")) return `${this.baseUrl}${clean}`
+            return clean
         }
     }
 
     private _originOf(url: string): string {
-        try {
-            return new URL(url).origin
-        } catch {
-            return this.baseUrl
-        }
+        // The extension runtime does not always provide the browser URL class.
+        return this._cleanUrl(url).match(/^https?:\/\/[^/?#]+/i)?.[0] || this.baseUrl
     }
 
     private _normalizeUrl(url: string): string {
-        return this._cleanUrl(url).replace(/\/+$/, "/")
+        return this._cleanUrl(url).replace(/^(https?:\/\/[^/?#]+)\/+/, "$1/").replace(/\/+$/, "/")
     }
 
     private _cleanUrl(url: string): string {
