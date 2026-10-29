@@ -17,7 +17,7 @@ class Provider {
 
     getSettings(): Settings {
         return {
-            episodeServers: ["default"],
+            episodeServers: ["Ravok", "MegaPlay", "AS CDN"],
             supportsDub: true,
         }
     }
@@ -83,6 +83,16 @@ class Provider {
             results.push({ id, title, url, subOrDub: opts.dub ? "dub" : "sub" })
         }
 
+        // AnimeSalt groups seasons on a single series page; WordPress search
+        // often returns nothing for the AniList title ending in "Season 2".
+        const seriesQuery = opts.query.replace(/\b(?:season\s+\d+|\d+(?:st|nd|rd|th)\s+season|part\s+\d+)\b/gi, "").trim()
+        if (results.length === 0 && seriesQuery && seriesQuery !== opts.query) {
+            const season = this._inferSeasonNumber(opts)
+            const part = this._inferPartNumber(opts)
+            const fallback = await this.search({ ...opts, query: seriesQuery })
+            return fallback.filter(result => !season || this._parseMode(result.id).seasonNumber === season)
+                .map(result => ({ ...result, id: part && !result.id.includes("::part=") ? `${result.id}::part=${part}` : result.id }))
+        }
         return results
     }
 
@@ -167,21 +177,37 @@ class Provider {
     }
 
     async findEpisodeServer(episode: EpisodeDetails, server: string): Promise<EpisodeServer> {
+        // Goja loses the message on rejected Error objects ("map[]").
+        return this._findEpisodeServer(episode, server).catch(error => { throw String(error) })
+    }
+
+    private async _findEpisodeServer(episode: EpisodeDetails, server: string): Promise<EpisodeServer> {
         const mode = this._episodeMode(episode)
         const episodeUrl = this._normalizeUrl(episode.url)
         const res = await fetch(episodeUrl, { credentials: "include", headers: this._siteHeaders() })
         if (!res.ok) throw new Error(`AnimeSalt: failed to load episode (HTTP ${res.status}): ${episodeUrl}`)
 
         const html = await res.text()
+        const automatic = !server || server.toLowerCase() === "default"
         const candidates = this._orderedCandidates(this._extractIframeUrls(html), mode)
+            .filter(url => automatic || this._playerName(url).toLowerCase() === server.toLowerCase())
+
+        // Seanime asks every advertised server. Omit hosts absent from this
+        // episode rather than returning another host under the requested name.
+        if (!automatic && candidates.length === 0) return { server, headers: {}, videoSources: [] }
 
         const errors: string[] = []
         for (const playerUrl of candidates) {
-            try {
-                const source = await this._resolvePlayer(playerUrl, episodeUrl, mode)
-                if (source.videoSources.length > 0) return { ...source, server }
-            } catch (error) {
-                errors.push(String(error))
+            // Ravok intermittently returns HTML, empty JSON, or a non-HLS body
+            // behind a signed .m3u8 URL. Refresh once before trying another host.
+            for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                    const source = await this._resolvePlayer(playerUrl, episodeUrl, mode)
+                    if (source.videoSources.length > 0) return await this._validateSources(source)
+                    throw new Error("player returned no direct video")
+                } catch (error) {
+                    errors.push(`${this._playerName(playerUrl)} (attempt ${attempt + 1}): ${String(error)}`)
+                }
             }
         }
 
@@ -192,14 +218,45 @@ class Provider {
         const asCdn = urls.filter(url => this._isAsCdnPlayer(url))
         const megaPlay = urls.filter(url => /https?:\/\/megaplay\.buzz\/stream\//i.test(url))
         const exactMegaPlay = megaPlay.filter(url => new RegExp(`/${mode}(?:[/?#]|$)`, "i").test(url))
-        const otherMegaPlay = megaPlay.filter(url => !exactMegaPlay.includes(url))
+        const otherMegaPlay = megaPlay.filter(url => !/\/(?:sub|dub)(?:[/?#]|$)/i.test(url))
 
         // Prefer the explicit MegaPlay sub/dub iframe when the page exposes it:
         // it returns one clean stream plus VTT subtitles for subbed playback.
-        // AS CDN is kept as a fallback for pages that only expose the multi-audio
-        // player. Do not expose AS CDN and MegaPlay as two Seanime servers — that
-        // creates duplicate "default" qualities for the same video.
+        // Keep explicitly dubbed embeds out of sub playback and vice versa.
         return [...exactMegaPlay, ...asCdn, ...otherMegaPlay]
+    }
+
+    private _playerName(url: string): string {
+        if (/^https?:\/\/ravok\.buzz\//i.test(url)) return "Ravok"
+        if (/^https?:\/\/as-cdn\d+\.top\//i.test(url)) return "AS CDN"
+        if (/^https?:\/\/megaplay\.buzz\//i.test(url)) return "MegaPlay"
+        return "Unknown"
+    }
+
+    private async _validateSources(source: EpisodeServer): Promise<EpisodeServer> {
+        const videos: VideoSource[] = []
+        const errors: string[] = []
+        for (const video of source.videoSources) {
+            try {
+                if (video.type === "m3u8") {
+                    const response = await fetch(video.url, { headers: { ...source.headers, "User-Agent": this._userAgent() } })
+                    if (!response.ok) throw new Error(`HLS HTTP ${response.status}`)
+                    const playlist = await response.text()
+                    if (!/^\s*#EXTM3U(?:\s|$)/.test(playlist)) throw new Error("invalid HLS playlist (#EXTM3U absent)")
+                    const languages: string[] = []
+                    for (const line of playlist.split(/\r?\n/)) {
+                        if (!/^#EXT-X-MEDIA:.*TYPE=AUDIO(?:,|$)/.test(line)) continue
+                        const name = line.match(/\bNAME="([^"]+)"/)?.[1] || line.match(/\bLANGUAGE="([^"]+)"/)?.[1]
+                        if (name && !languages.includes(name)) languages.push(name)
+                    }
+                    if (languages.length) video.label = `Multi-audio: ${languages.join(", ")}`
+                }
+                video.quality = `${video.quality === "auto" ? "Auto" : video.quality} - ${source.server}`
+                videos.push(video)
+            } catch (error) { errors.push(String(error)) }
+        }
+        if (!videos.length) throw new Error(errors.join("; ") || "no usable video sources")
+        return { ...source, videoSources: videos }
     }
 
     private async _resolvePlayer(playerUrl: string, episodeUrl: string, mode: AnimeSaltMode): Promise<EpisodeServer> {
@@ -218,7 +275,8 @@ class Provider {
         const id = playerUrl.split("/video/")[1]?.split(/[?#]/)[0]
         if (!id) return { server: "AS CDN", headers: {}, videoSources: [] }
 
-        const subtitles = mode === "sub" ? await this._extractAsCdnSubtitles(playerUrl) : []
+        // Subtitle failure must not discard an otherwise playable video.
+        const subtitles = mode === "sub" ? await this._extractAsCdnSubtitles(playerUrl).catch(() => []) : []
         const body = `hash=${encodeURIComponent(id)}&r=${encodeURIComponent(episodeUrl)}`
         const res = await fetch(`${origin}/player/index.php?data=${encodeURIComponent(id)}&do=getVideo`, {
             method: "POST",
@@ -231,7 +289,7 @@ class Provider {
             },
             body,
         })
-        if (!res.ok) return { server: "AS CDN", headers: {}, videoSources: [] }
+        if (!res.ok) throw new Error(`getVideo HTTP ${res.status}`)
 
         const data = (await res.json()) as AnimeSaltSourceResponse
         const sources: VideoSource[] = []
@@ -244,7 +302,7 @@ class Provider {
                 url: clean,
                 type: this._videoType(clean),
                 quality,
-                label: mode === "dub" ? "Dub" : "Sub",
+                label: "Multi-audio",
                 subtitles,
             })
         }
@@ -260,8 +318,8 @@ class Provider {
         }
 
         return {
-            server: "default",
-            headers: { "Referer": `${origin}/`, "Origin": origin },
+            server: this._playerName(playerUrl),
+            headers: { "Referer": `${origin}/`, "Origin": origin, "User-Agent": this._userAgent() },
             videoSources: sources,
         }
     }
@@ -316,7 +374,7 @@ class Provider {
         }
 
         return {
-            server: "default",
+            server: "MegaPlay",
             headers: { "Referer": `${origin}/`, "Origin": origin },
             videoSources: sources,
         }

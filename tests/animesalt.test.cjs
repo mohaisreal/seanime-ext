@@ -20,9 +20,13 @@ function response(data, status = 200, url) {
     return { ok: status >= 200 && status < 300, status, url, text: () => data, json: () => data }
 }
 
-function provider(fetch) {
+function provider(fetch, playlist = '#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Japanese",LANGUAGE="ja"\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",LANGUAGE="en"\n') {
     // Exercise the fallback for runtimes without a browser URL constructor.
-    return vm.runInNewContext(`${source}\nnew Provider()`, { fetch })
+    return vm.runInNewContext(`${source}\nnew Provider()`, {
+        fetch: (url, options) => url === stream
+            ? typeof playlist === "function" ? playlist(url, options) : response(playlist)
+            : fetch(url, options),
+    })
 }
 
 function episode(mode = "sub", url = movie) {
@@ -87,14 +91,15 @@ for (const mode of ["sub", "dub"]) {
             return response({ hls: true, videoSource: stream, securedLink: stream })
         })
         const result = await p.findEpisodeServer(episode(mode, `${base}//movies/jujutsu-kaisen-0/`), "default")
-        assert.equal(result.server, "default")
+        assert.equal(result.server, "Ravok")
         assert.equal(result.headers.Origin, "https://ravok.buzz")
         assert.equal(result.headers.Referer, "https://ravok.buzz/")
         assert.equal(result.videoSources.length, 1)
         const video = result.videoSources[0]
         assert.equal(video.url, stream)
         assert.equal(video.type, "m3u8")
-        assert.equal(video.label, mode === "sub" ? "Sub" : "Dub")
+        assert.equal(video.label, "Multi-audio: Japanese, English")
+        assert.equal(video.quality, "Auto - Ravok")
         assert.equal(video.subtitles.length, mode === "sub" ? 1 : 0)
         if (mode === "sub") {
             assert.equal(video.subtitles[0].language, "en")
@@ -122,7 +127,7 @@ test("legacy AS CDN embeds still resolve", async () => {
     })
     const result = await p.findEpisodeServer(episode("dub"), "default")
     assert.equal(result.videoSources.length, 1)
-    assert.equal(result.videoSources[0].quality, "1080p")
+    assert.equal(result.videoSources[0].quality, "1080p - AS CDN")
 })
 
 test("MegaPlay matching sub/dub mode remains preferred over Ravok", async () => {
@@ -166,4 +171,75 @@ test("explicit season and part selections retain local episode numbering", async
     assert.equal(part[0].url, `${base}/episode/jujutsu-kaisen-1x13/`)
     assert.equal(part[0].number, 1)
     assert.ok(part[0].id.startsWith("dub$"))
+})
+
+test("season-qualified searches fall back to the series title and retain season 2", async () => {
+    const queries = []
+    const p = provider(async url => {
+        queries.push(url)
+        if (url === series) return response(seasons)
+        return response(url.endsWith("Season%202") ? "" : searchHtml)
+    })
+    const results = await p.search({ query: "Jujutsu Kaisen Season 2", dub: false, media: { format: "TV", episodeCount: 23 } })
+    assert.equal(results.length, 1)
+    assert.ok(results[0].id.endsWith("::eps=23::season=2"))
+    assert.ok(queries.includes(`${base}/?s=Jujutsu%20Kaisen`))
+})
+
+test("named servers only resolve their own host and omit unavailable hosts", async () => {
+    const calls = []
+    const p = provider(async url => {
+        calls.push(url)
+        if (url === movie) return response(`<iframe src="${player}"></iframe><iframe src="https://megaplay.buzz/stream/123/sub"></iframe>`)
+        assert.ok(url.startsWith("https://ravok.buzz/"))
+        return response({ videoSource: stream })
+    })
+    assert.deepEqual(Array.from(p.getSettings().episodeServers), ["Ravok", "MegaPlay", "AS CDN"])
+    assert.equal((await p.findEpisodeServer(episode("dub"), "Ravok")).server, "Ravok")
+    const absent = await p.findEpisodeServer(episode("dub"), "AS CDN")
+    assert.equal(absent.videoSources.length, 0)
+    assert.ok(calls.every(url => !url.includes("megaplay")))
+})
+
+test("sub playback never silently falls back to an explicitly dubbed MegaPlay embed", async () => {
+    const p = provider(async url => {
+        assert.equal(url, movie)
+        return response('<iframe src="https://megaplay.buzz/stream/123/dub"></iframe>')
+    })
+    await assert.rejects(p.findEpisodeServer(episode("sub"), "default"), /0 supported players/)
+})
+
+test("an invalid signed HLS response triggers a fresh resolution before success", async () => {
+    let posts = 0, playlists = 0
+    const p = provider(async url => {
+        if (url === movie) return response(`<iframe src="${player}"></iframe>`)
+        posts++
+        return response({ videoSource: stream })
+    }, () => response(++playlists === 1 ? "upstream unavailable" : "#EXTM3U\n#EXT-X-VERSION:3\n"))
+    assert.equal((await p.findEpisodeServer(episode("dub"), "Ravok")).server, "Ravok")
+    assert.equal(posts, 2)
+    assert.equal(playlists, 2)
+})
+
+test("persistent invalid HLS fails with a useful message and can fall back to a different host", async () => {
+    const mega = "https://megaplay.buzz/stream/123/sub"
+    const p = provider(async url => {
+        if (url === movie) return response(`<iframe src="${mega}"></iframe><iframe src="${player}"></iframe>`)
+        if (url === mega) return response('<div data-id="source-id"></div>')
+        if (url.includes("getSources")) return response({ sources: { file: "https://cdn.example/bad.m3u8" } })
+        if (url.includes("cdn.example")) return response("not a playlist")
+        return response(url === player ? "" : { videoSource: stream })
+    })
+    assert.equal((await p.findEpisodeServer(episode(), "default")).server, "Ravok")
+    await assert.rejects(p.findEpisodeServer(episode(), "MegaPlay"), /MegaPlay.*invalid HLS playlist/)
+})
+
+test("a subtitle request failure does not prevent playback", async () => {
+    const p = provider(async url => {
+        if (url === movie) return response(`<iframe src="${player}"></iframe>`)
+        if (url === player) throw new Error("subtitle host unavailable")
+        return response({ videoSource: stream })
+    })
+    const result = await p.findEpisodeServer(episode(), "Ravok")
+    assert.equal(result.videoSources[0].subtitles.length, 0)
 })

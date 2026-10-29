@@ -1,7 +1,7 @@
 {
   "id": "animesalt",
   "name": "AnimeSalt",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "manifestURI": "https://raw.githubusercontent.com/mohaisreal/seanime-ext/main/src/AnimeSalt/manifest.json",
   "language": "typescript",
   "type": "onlinestream-provider",
