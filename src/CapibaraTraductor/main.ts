@@ -106,12 +106,15 @@ class Provider {
 
     async findChapterPages(id: string): Promise<ChapterPage[]> {
         const [orgSlug, mangaSlug, chapterNum] = id.split("|")
+        const readerUrl = `${this.baseUrl}/${orgSlug}/manga/${mangaSlug}/chapters/${chapterNum}`
 
         const apiUrl = `${this.api}/manga-custom/${mangaSlug}/chapter/${chapterNum}/pages`
         const res = await fetch(apiUrl, {
             headers: {
                 "Accept": "application/json",
                 "x-organization": orgSlug,
+                "Referer": readerUrl,
+                "Origin": this.baseUrl,
             },
         })
 
@@ -119,6 +122,7 @@ class Provider {
 
         let json: any
         try { json = JSON.parse(await res.text()) } catch { return [] }
+        if (!json || json.status === false) return []
 
         let raw: CapibaraPage[] = []
         if (Array.isArray(json)) {
@@ -131,11 +135,113 @@ class Provider {
             raw = json.data.pages as CapibaraPage[]
         }
 
-        return raw.map((p: CapibaraPage, index: number) => ({
-            url: p.url ?? p.imageUrl ?? p.image ?? "",
-            index: p.index !== undefined ? p.index : index,
-            headers: { "Referer": this.baseUrl },
-        }))
+        // The reader decodes pg with the response's rv BEFORE removing lh inserts.
+        // imageUrl alone now contains a promotional replacement, even on HTTP 200.
+        const seed = json.rv == null ? null : this._pageSeed(json.rv)
+        const pages = raw.map((p, index) => {
+            let url = p.url ?? p.imageUrl ?? p.image ?? ""
+            if (p.pg != null) {
+                if (seed === null) throw new Error("Capibara: falta la clave de las páginas.")
+                url = this._decodePageUrl(p.pg, seed, index)
+            } else if (seed !== null && url && !/^https?:\/\//i.test(url)) {
+                // Older reader responses place the encoded value in imageUrl itself.
+                url = this._decodePageUrl(url, seed, index)
+            }
+            return url
+        })
+        const inserted = json.lh == null ? [] : this._insertedPages(json.lh, pages.length)
+        return pages.filter((_, index) => inserted.indexOf(index) < 0).map((url, index) => {
+            if (!/^https?:\/\//i.test(url) || /\/tenants\/capibara\/promo\//i.test(url)) {
+                throw new Error("Capibara: no se pudo recuperar la imagen original de la página.")
+            }
+            return { url, index, headers: { Referer: readerUrl, Origin: this.baseUrl } }
+        })
+    }
+
+    // Pure JS for Seanime/Goja: no browser globals, Node modules or remote scripts.
+    private _decodeBase64(value: string): number[] {
+        if (typeof value !== "string") throw new Error("Capibara: codificación de páginas inválida.")
+        const input = value.replace(/-/g, "+").replace(/_/g, "/").replace(/=+$/, "")
+        if (!/^[A-Za-z0-9+/]*$/.test(input) || input.length % 4 === 1) {
+            throw new Error("Capibara: codificación de páginas inválida.")
+        }
+        const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        const bytes: number[] = []
+        let word = 0, bits = 0
+        for (let i = 0; i < input.length; i++) {
+            word = (word << 6) | alphabet.indexOf(input[i])
+            bits += 6
+            if (bits >= 8) { bits -= 8; bytes.push((word >>> bits) & 255) }
+        }
+        return bytes
+    }
+
+    private _random(seed: number): () => number {
+        let state = seed >>> 0
+        return () => {
+            state = (state + 0x6d2b79f5) >>> 0
+            let mixed = Math.imul(state ^ (state >>> 15), state | 1)
+            mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61)
+            return ((mixed ^ (mixed >>> 14)) >>> 0) / 0x100000000
+        }
+    }
+
+    private _pageSeed(value: string): number {
+        const bytes = this._decodeBase64(value)
+        if (bytes.length !== 8) throw new Error("Capibara: clave de páginas inválida.")
+        const mask = [60, 110, 243, 114]
+        let seed = 0
+        for (let i = 0; i < 4; i++) seed = (seed << 8) | (bytes[i * 2] ^ mask[i])
+        return seed >>> 0
+    }
+
+    private _decodePageUrl(value: string, seed: number, index: number): string {
+        const bytes = this._decodeBase64(value)
+        if (bytes.length < 3 || bytes[0] !== 2) throw new Error("Capibara: formato de páginas no compatible.")
+        // Field 0 is the full image; the website also uses field 1 for blurred previews.
+        const random = this._random(seed ^ Math.imul(index + 1, 0x9e3779b1) ^ 0x7f4a7c15)
+        let checksum = 90, escaped = ""
+        for (let i = 2; i < bytes.length; i++) {
+            const byte = bytes[i] ^ Math.floor(random() * 256)
+            checksum = (checksum + byte * (i - 1)) & 255
+            escaped += "%" + ("0" + byte.toString(16)).slice(-2)
+        }
+        if ((bytes[1] ^ Math.floor(random() * 256)) !== checksum) {
+            throw new Error("Capibara: la comprobación de la URL de página ha fallado.")
+        }
+        return decodeURIComponent(escaped)
+    }
+
+    private _insertedPages(value: string, length: number): number[] {
+        const bytes = this._decodeBase64(value)
+        if (bytes.length !== 18) throw new Error("Capibara: metadatos de páginas inválidos.")
+        const positions = [2, 7, 11, 16], rows: number[] = []
+        let seed = 0
+        for (let i = 0; i < bytes.length; i++) {
+            if (positions.indexOf(i) >= 0) seed = (seed << 8) | bytes[i]
+            else rows.push(bytes[i])
+        }
+        const order = rows.map((_, i) => i)
+        const shuffle = this._random(seed ^ 1374496675)
+        for (let i = order.length - 1; i > 0; i--) {
+            const j = Math.floor(shuffle() * (i + 1))
+            const swap = order[i]; order[i] = order[j]; order[j] = swap
+        }
+        const random = this._random(seed ^ 795581489)
+        const decoded = order.map(i => rows[i] ^ Math.floor(random() * 256))
+        let checksum = 0
+        for (let i = 0; i < decoded.length - 1; i++) checksum = (checksum + decoded[i] * (i + 1)) & 255
+        const count = decoded[0]
+        if ((checksum ^ 165) !== decoded[13] || count < 1 || count > 5) {
+            throw new Error("Capibara: metadatos de páginas dañados.")
+        }
+        const inserted: number[] = []
+        for (let i = 0; i < count; i++) {
+            const index = (decoded[1 + i * 2] << 8) | decoded[2 + i * 2]
+            if (index <= 0 || index >= length) throw new Error("Capibara: posición de página insertada inválida.")
+            inserted.push(index)
+        }
+        return inserted
     }
 
     // ── Astro Island chapter extraction ───────────────────────────────────────
@@ -279,4 +385,5 @@ interface CapibaraPage {
     imageUrl?: string
     image?: string
     index?: number
+    pg?: string
 }

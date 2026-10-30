@@ -1,0 +1,80 @@
+[
+  {
+    "name": "pages",
+    "response": {
+      "status": true,
+      "data": [
+        {
+          "imageUrl": "https://r2.capibaratraductor.com/tenants/capibara/promo/libre/v3.webp",
+          "pg": "AkrHDT6Wut-_jWhAXeEGYWXoR5j5EfizTbiGgVNeLBh961_3ICcOgkx3wL9OZdzGG1-ZKmwFdBApd1fvDpRoHKIPPZC6RGxbFItQyN2mM0KPuP5RQPlbAB3okwiWpDI"
+        },
+        {
+          "imageUrl": "https://r2.capibaratraductor.com/tenants/capibara/promo/libre/v3.webp",
+          "pg": "AqG78mvZ1q3pgKFSrVXyrhpu3e5h3eXbr_M8n3Yv67szJ79HfAm6G6vCPvjRiJdL0HdPUFp4pvmowqs1abqLddHW1LDXqzVBaqW6XqYeo9XUR4ZRIdQv5m3EmYkcNQU"
+        },
+        {
+          "imageUrl": "https://r2.capibaratraductor.com/tenants/capibara/promo/libre/v3.webp",
+          "pg": "AoUOhZJ8iS6XOEFPIp0mFn1Uj0rPvgrj6fcYQOHA5Uxw-F7BeiYZ9zaTtecCCAFQBwAtovdkq0dQ4uBlaut0Y2cpq13pb8LkXgenpBTlHiZ106Iv3zfBkVWUr6oP5Bs"
+        }
+      ],
+      "rv": "8ztvPMFynlU"
+    },
+    "expected": [
+      "https://r2.capibaratraductor.com/v2/tenants/thcscanlations/chapters/1793355173089_714509.webp",
+      "https://r2.capibaratraductor.com/v2/tenants/thcscanlations/chapters/1793355176300_498416.webp",
+      "https://r2.capibaratraductor.com/v2/tenants/thcscanlations/chapters/1793355178402_978782.webp"
+    ]
+  },
+  {
+    "name": "mashle-magia-y-musculos",
+    "response": {
+      "status": true,
+      "data": [
+        {
+          "imageUrl": "https://r2.capibaratraductor.com/tenants/capibara/promo/libre/v3.webp",
+          "pg": "ArYX4WQOUANeOrDaqX9gXuvTBnoKOq3enn-5QWR_VnhuyUfEHrWDhwwhQKbY77z0_Bg9IkwRFl5Q76RgLPTsGL6SQO7dhBQVVaswK-rqUM9NQRxe"
+        },
+        {
+          "imageUrl": "https://r2.capibaratraductor.com/tenants/capibara/promo/libre/v3.webp",
+          "pg": "Ao5PfKf0LIADNInr-0mrDMBXH9l9HVCVvvdByQ_IVJPyQCl6KIHz-ckqLN1N4dHMy0MYxLycrmzjiZTHGDGxYRSIvYvs9oCWuZcUgciKh79HBaDw"
+        },
+        {
+          "imageUrl": "https://r2.capibaratraductor.com/tenants/capibara/promo/libre/v3.webp",
+          "pg": "Au5PRSPCYFndsyBnWZI0OJlRuHW7lQvhMQ1pev45HCZCPq3ztoWUqBuYT_r-TyvHNLwYY4Zn5ui8KxV-XRjFokZtszKh3ULK2m4FQTkhMRSevDwP"
+        }
+      ],
+      "rv": "5qtuEI5ZIP0"
+    },
+    "expected": [
+      "https://r2.capibaratraductor.com/v2/tenants/dnt/chapters/1791164163622_944591.webp",
+      "https://r2.capibaratraductor.com/v2/tenants/dnt/chapters/1791164166150_364967.webp",
+      "https://r2.capibaratraductor.com/v2/tenants/dnt/chapters/1791164167140_310488.webp"
+    ]
+  },
+  {
+    "name": "yozakura-san-chi-no-daisakusen",
+    "response": {
+      "status": true,
+      "data": [
+        {
+          "imageUrl": "https://r2.capibaratraductor.com/tenants/capibara/promo/libre/v3.webp",
+          "pg": "Agwg7ZmlIZ1dx2o93zAu7pGoJAoq1YKNEDqBHFvPW4L6FNzeMe18UjC8rGQXr24x8tie_RAXcE3K01lEJk3L9Y-ioypUjMgDp2P_QXSqfH1u5WWu"
+        },
+        {
+          "imageUrl": "https://r2.capibaratraductor.com/tenants/capibara/promo/libre/v3.webp",
+          "pg": "AlBuPrxazHAzS3xmPdp7bLLF6NlPQy6w9op11gsGqyrjmwatC_A3F3fcfQMZxrMFs9wFp8EJhgFSZe5JZvsbtMNG26B_Yj4rmBznjPWW6U0b8Ds"
+        },
+        {
+          "imageUrl": "https://r2.capibaratraductor.com/tenants/capibara/promo/libre/v3.webp",
+          "pg": "AjY-y6YDZS_W-EcC89OWE2_eQKV7C-SnY_gAPmK-_CPWi7eSSeqiXsEPjWnBQjm5pqPFa9r_FeP8WRBEasqFCir6zgwm7M_qZJe7hEUK3_OJ23Du"
+        }
+      ],
+      "rv": "SNThOJHIuh0"
+    },
+    "expected": [
+      "https://r2.capibaratraductor.com/v2/tenants/dnt/chapters/1791771884413_382162.webp",
+      "https://r2.capibaratraductor.com/v2/tenants/dnt/chapters/1791771892388_57233.webp",
+      "https://r2.capibaratraductor.com/v2/tenants/dnt/chapters/1791771894495_960368.webp"
+    ]
+  }
+]
