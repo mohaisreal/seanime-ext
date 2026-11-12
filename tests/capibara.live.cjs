@@ -6,7 +6,7 @@ const { join } = require("node:path")
 const test = require("node:test")
 const vm = require("node:vm")
 
-test("real API: pg/rv produces distinct original images from two scans", { timeout: 90000 }, async () => {
+test("real API: ph/ls and HTML keys recover the reader's original images from two scans", { timeout: 90000 }, async () => {
     const source = stripTypeScriptTypes(readFileSync(join(__dirname, "../src/CapibaraTraductor/main.ts"), "utf8"))
     const p = vm.runInNewContext(`${source}\nnew Provider()`, {
         fetch: async (url, options) => {
@@ -16,12 +16,11 @@ test("real API: pg/rv produces distinct original images from two scans", { timeo
         },
     })
     const promo = Buffer.from(await (await fetch("https://r2.capibaratraductor.com/tenants/capibara/promo/libre/v3.webp")).arrayBuffer())
-    for (const id of [
-        "thcscanlations|shinja-zero-no-megami-sama-to-hajimeru-isekai-kouryaku-classmate-saijaku-no-mahou-tsukai|3",
-        "dnt|mashle-magia-y-musculos|149", "dnt|yozakura-san-chi-no-daisakusen|105",
-    ]) {
-        const pages = await p.findChapterPages(id)
+    // URLs independently captured from Capibara's reader, not the API decoys.
+    for (const fixture of require("./fixtures/capibara-reader-v4.json")) {
+        const pages = await p.findChapterPages(fixture.id)
         assert.ok(pages.length > 1)
+        assert.deepEqual(Array.from(pages, p => p.url), fixture.expected)
         assert.equal(new Set(pages.map(p => p.url)).size, pages.length)
         const images = await Promise.all([pages[0], pages[pages.length - 1]].map(async page => {
             assert.doesNotMatch(page.url, /\/promo\//)
@@ -35,6 +34,6 @@ test("real API: pg/rv produces distinct original images from two scans", { timeo
             return bytes
         }))
         assert.notDeepEqual(images[0], images[1])
-        console.log(`${id}: ${pages.length} URLs originales; primera y última imagen verificadas`)
+        console.log(`${fixture.id}: ${pages.length} URLs originales; primera y última imagen verificadas`)
     }
 })

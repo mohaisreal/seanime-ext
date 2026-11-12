@@ -73,19 +73,21 @@ class Provider {
 
             // Fetch full chapter list from Astro Island props in the manga page HTML.
             // Fall back to the search API's partial list (2 most recent) if HTML parsing fails.
-            let chapterNums = await this._fetchChaptersFromHtml(orgSlug, mangaSlug)
-            if (!chapterNums.length) {
-                chapterNums = item.chapters.map(c => c.number)
+            let chapters = await this._fetchChaptersFromHtml(orgSlug, mangaSlug)
+            if (!chapters.length) {
+                chapters = item.chapters
             }
-            if (!chapterNums.length) continue
+            if (!chapters.length) continue
 
-            console.log("[capibara] org=" + orgSlug + " chapters=" + chapterNums.length)
+            console.log("[capibara] org=" + orgSlug + " chapters=" + chapters.length)
 
-            for (const num of chapterNums) {
+            for (const chapter of chapters) {
+                const num = chapter.number
+                const title = chapter.title?.trim() || item.chapters.find(c => c.number === num)?.title?.trim()
                 all.push({
                     id: `${orgSlug}|${mangaSlug}|${num}`,
                     url: `${this.baseUrl}/${orgSlug}/manga/${mangaSlug}/chapters/${num}`,
-                    title: `Capítulo ${num}`,
+                    title: title || `Capítulo ${num}`,
                     chapter: String(num),
                     index: 0,
                     scanlator: orgName,
@@ -135,12 +137,20 @@ class Provider {
             raw = json.data.pages as CapibaraPage[]
         }
 
-        // The reader decodes pg with the response's rv BEFORE removing lh inserts.
-        // imageUrl alone now contains a promotional replacement, even on HTTP 200.
-        const seed = json.rv == null ? null : this._pageSeed(json.rv)
+        if (!raw.length) return []
+        // Decode at the original API positions, then remove lh inserts. Current
+        // imageUrl values can be valid URLs for unrelated images, not just promos.
+        const readerKey = json.ls == null ? null : await this._readerKey(json.ls, readerUrl)
+        const seed = readerKey !== null || json.rv == null ? null : this._pageSeed(json.rv)
         const pages = raw.map((p, index) => {
             let url = p.url ?? p.imageUrl ?? p.image ?? ""
-            if (p.pg != null) {
+            if (p.ph != null) {
+                if (!readerKey) throw new Error("Capibara: falta la clave del lector.")
+                url = this._decodeReaderUrl(p.ph, readerKey, index, p.id)
+            } else if (readerKey) {
+                // Never silently accept a decoy when an encoded page is missing.
+                url = ""
+            } else if (p.pg != null) {
                 if (seed === null) throw new Error("Capibara: falta la clave de las páginas.")
                 url = this._decodePageUrl(p.pg, seed, index)
             } else if (seed !== null && url && !/^https?:\/\//i.test(url)) {
@@ -162,18 +172,127 @@ class Provider {
     private _decodeBase64(value: string): number[] {
         if (typeof value !== "string") throw new Error("Capibara: codificación de páginas inválida.")
         const input = value.replace(/-/g, "+").replace(/_/g, "/").replace(/=+$/, "")
-        if (!/^[A-Za-z0-9+/]*$/.test(input) || input.length % 4 === 1) {
+        return this._decodeSymbols(input, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
+    }
+
+    private _decodeSymbols(input: string, alphabet: string): number[] {
+        if (typeof input !== "string" || input.length % 4 === 1) {
             throw new Error("Capibara: codificación de páginas inválida.")
         }
-        const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
         const bytes: number[] = []
         let word = 0, bits = 0
         for (let i = 0; i < input.length; i++) {
-            word = (word << 6) | alphabet.indexOf(input[i])
+            const digit = alphabet.indexOf(input[i])
+            if (digit < 0) throw new Error("Capibara: codificación de páginas inválida.")
+            word = (word << 6) | digit
             bits += 6
             if (bits >= 8) { bits -= 8; bytes.push((word >>> bits) & 255) }
         }
         return bytes
+    }
+
+    private _readerBytes(value: string): number[] {
+        return this._decodeSymbols(value, "CDoIL78Qqwj9zKM6mOFdf0niV_AByGg4aNhbEetPsHr1x-TpZJYRk5lWu32vUcSX")
+    }
+
+    private _mix(value: number): number {
+        value = Math.imul(value ^ (value >>> 16), 2146121005)
+        value = Math.imul(value ^ (value >>> 15), 2221713035)
+        return (value ^ (value >>> 16)) >>> 0
+    }
+
+    private _hash(value: string | number[]): number {
+        let hash = 2166136261
+        for (let i = 0; i < value.length; i++) {
+            hash = Math.imul(hash ^ (typeof value === "string" ? value.charCodeAt(i) : value[i]), 16777619)
+        }
+        return hash >>> 0
+    }
+
+    private async _readerKey(value: string, readerUrl: string): Promise<CapibaraReaderKey> {
+        const bytes = this._readerBytes(value)
+        const header = bytes[0]
+        if (bytes.length === 12) {
+            const positions = [[3, 7, 1, 10], [5, 2, 9, 11], [8, 4, 11, 1], [2, 10, 6, 3],
+                [9, 1, 5, 7], [11, 6, 3, 8], [4, 9, 2, 6], [7, 11, 8, 5]][header & 7]
+            const masks = [93, 162, 25, 231]
+            let seed = 0
+            for (let i = 0; i < 4; i++) seed = (seed << 8) | (bytes[positions[i]] ^ masks[(i + header) & 3] ^ header)
+            return { seed: seed >>> 0, version: 3 }
+        }
+        if (bytes.length !== 14) throw new Error("Capibara: formato de clave del lector no compatible.")
+        const positions = [[12, 2, 13, 7, 1, 9, 8], [11, 4, 5, 6, 3, 9, 12], [9, 8, 2, 3, 1, 6, 13],
+            [8, 7, 2, 13, 1, 3, 6], [13, 2, 11, 6, 4, 3, 8], [6, 1, 3, 4, 7, 5, 11],
+            [4, 8, 7, 9, 1, 10, 13], [8, 3, 6, 13, 12, 10, 11]][header & 7]
+        const masks = [234, 55, 192, 73, 249, 251, 2, 58]
+        const parts = positions.map((position, i) => bytes[position] ^ masks[(i + header) & 7] ^ header)
+        const period = (parts[0] << 16) | (parts[1] << 8) | parts[2]
+        const maskedSeed = (parts[3] << 24) | (parts[4] << 16) | (parts[5] << 8) | parts[6]
+        // The v4 key is split between the API and a short-lived literal in the
+        // reader HTML. Parse only that literal; do not execute remote JS/Wasm.
+        const res = await fetch(readerUrl, { headers: {
+            Accept: "text/html,application/xhtml+xml", Referer: this.baseUrl, "Cache-Control": "no-cache",
+        } })
+        if (!res.ok) throw new Error(`Capibara: HTTP ${res.status} al obtener la clave del lector.`)
+        const html = await res.text()
+        for (let current = period - 1; current <= period + 1; current++) {
+            const name = "_" + this._mix(current ^ 1000283751).toString(36)
+            const literal = new RegExp(`\\b${name}\\s*=\\s*["']([0-9a-f]{24})["']`).exec(html)
+            if (!literal) continue
+            const slot = period - current + 1
+            const fragment = parseInt(literal[1].slice(slot * 8, slot * 8 + 8), 16)
+            const htmlSeed = fragment ^ this._mix((current * 3 + slot) ^ 739982445)
+            return { seed: (maskedSeed ^ htmlSeed) >>> 0, version: 4 }
+        }
+        throw new Error("Capibara: no se encontró la clave vigente en el lector. Vuelve a abrir el capítulo.")
+    }
+
+    private _unwrapReaderPage(value: string, index: number): string {
+        if (typeof value !== "string" || value.length < 2) throw new Error("Capibara: página codificada inválida.")
+        const alphabet = "tgEib4lqMSha5TU13QX28deN-xuk6KywP0m_roGYvBWAnzFfjcJIVROp7CsDZ9HL"
+        let shifted = ""
+        for (let i = 0; i < value.length; i++) {
+            const digit = alphabet.indexOf(value[i])
+            if (digit < 0) throw new Error("Capibara: página codificada inválida.")
+            shifted += alphabet[(digit - i * 7 - 13 - index) & 63]
+        }
+        const rotate = (value.length * 5 + index * 3 + 1) % value.length
+        const rotated = shifted.slice(value.length - rotate) + shifted.slice(0, value.length - rotate)
+        let result = ""
+        for (let i = 0; i < value.length; i++) {
+            result += i % 2 ? rotated[value.length - 1 - (i - 1) / 2] : rotated[i / 2]
+        }
+        return result
+    }
+
+    private _decodeReaderUrl(value: string, key: CapibaraReaderKey, index: number, id?: number | string): string {
+        const bytes = this._readerBytes(this._unwrapReaderPage(value, index))
+        if (bytes.length < 3 || bytes.length > 4096) throw new Error("Capibara: tamaño de página codificada inválido.")
+        const v4 = key.version === 4
+        let a = this._mix(key.seed ^ (v4 ? 1821285621 : 2704714413))
+        let b = this._mix(a ^ Math.imul(index + 1, 2654435761))
+        let c = this._mix(b ^ Math.imul(1, 2246822519) ^ this._hash(String(id ?? "")))
+        let counter = this._mix(c ^ (v4 ? 374761393 : 668265263))
+        const word = () => {
+            const result = ((a + b) | 0) + counter | 0
+            counter = (counter + 1) | 0
+            a = b ^ (b >>> 9)
+            b = (c + (c << 3)) | 0
+            c = (c << 21) | (c >>> 11)
+            c = (c + result) | 0
+            return result >>> 0
+        }
+        for (let i = 0; i < (v4 ? 16 : 12); i++) word()
+        let stream = 0
+        for (let i = 0; i < bytes.length; i++) {
+            if (i % 4 === 0) stream = word()
+            bytes[i] ^= (stream >>> ((i % 4) * 8)) & 255
+        }
+        const payload = bytes.slice(3)
+        if (bytes[0] !== key.version || (this._hash(payload) & 65535) !== ((bytes[1] << 8) | bytes[2])) {
+            throw new Error("Capibara: la comprobación de la URL del lector ha fallado.")
+        }
+        return decodeURIComponent(payload.map(byte => "%" + ("0" + byte.toString(16)).slice(-2)).join(""))
     }
 
     private _random(seed: number): () => number {
@@ -246,7 +365,7 @@ class Provider {
 
     // ── Astro Island chapter extraction ───────────────────────────────────────
 
-    private async _fetchChaptersFromHtml(orgSlug: string, mangaSlug: string): Promise<number[]> {
+    private async _fetchChaptersFromHtml(orgSlug: string, mangaSlug: string): Promise<CapibaraChapter[]> {
         const url = `${this.baseUrl}/${orgSlug}/manga/${mangaSlug}`
         const res = await fetch(url, {
             headers: {
@@ -281,7 +400,7 @@ class Provider {
 
             if (chapters && chapters.length > 0) {
                 console.log("[capibara] astro-island chapters=" + chapters.length)
-                return chapters.map((c: any) => c.number as number)
+                return chapters as CapibaraChapter[]
             }
         }
 
@@ -381,9 +500,16 @@ interface CapibaraChapter {
 }
 
 interface CapibaraPage {
+    id?: number | string
     url?: string
     imageUrl?: string
     image?: string
     index?: number
     pg?: string
+    ph?: string
+}
+
+interface CapibaraReaderKey {
+    seed: number
+    version: 3 | 4
 }
